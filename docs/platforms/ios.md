@@ -199,6 +199,13 @@ ordinary browsing, including pinned rows, unless selected. Open **Automations**
 to find their transcripts; sidebar search also includes matching automation sessions.
 Saved pins are preserved.
 
+Like the Control UI sidebar, the iOS sidebar nests child sessions under their
+parent. Tap the arrow beside a parent to show or hide its children; a parent
+opens automatically when one of its children is the current chat. Subagent runs
+do not get their own sidebar rows: their status counts toward the parent row, and
+any conversations they start appear in their place. The recent-session limit
+counts only top-level sessions.
+
 Long-press an eligible session and choose **Snooze**:
 **In 1 hour**, **In 3 hours**, **This evening** (18:00 local, only when more than
 one hour away), **Tomorrow** (09:00 on the next calendar day), or **Next week**

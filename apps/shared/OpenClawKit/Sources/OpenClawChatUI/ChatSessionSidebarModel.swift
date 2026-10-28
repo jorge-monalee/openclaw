@@ -145,6 +145,10 @@ public enum ChatSessionSidebarModel {
         public var id: String {
             self.session.key
         }
+
+        public var previewSessions: [OpenClawChatSessionEntry] {
+            [self.session] + self.foldedSessions + self.children.flatMap(\.previewSessions)
+        }
     }
 
     public struct Section: Identifiable, Equatable, Sendable {
@@ -157,6 +161,37 @@ public enum ChatSessionSidebarModel {
         let trimmed = key.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return false }
         return trimmed == "onboarding" || trimmed.hasSuffix(":onboarding")
+    }
+
+    static func isSidebarRun(_ key: String) -> Bool {
+        let key = key.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        let parts = key.split(separator: ":")
+        return key.hasPrefix("subagent:") || (parts.count >= 4 && parts[0] == "agent" && parts[2] == "subagent")
+    }
+
+    /// ui/src/components/app-sidebar-session-tree.ts never lists a subagent run as a row:
+    /// its persistent children take its place and the parent keeps its badges and attention.
+    public static func foldingSubagentRuns(_ sections: [Section]) -> [Section] {
+        func fold(_ node: Node, into runs: inout [OpenClawChatSessionEntry]) -> [Node] {
+            var childRuns: [OpenClawChatSessionEntry] = []
+            let children = node.children.flatMap { fold($0, into: &childRuns) }
+            guard !self.isSidebarRun(node.id) else {
+                runs += [node.session] + node.foldedSessions + childRuns
+                return children
+            }
+            // The tree already counted the folded runs in these badges.
+            return [Node(
+                session: node.session,
+                children: children,
+                badges: node.badges,
+                foldedSessions: node.foldedSessions + childRuns)]
+        }
+        return sections.compactMap { section -> Section? in
+            // Top-level runs belong to Home or to a parent outside this list; neither has a row here.
+            var unlistedParentRuns: [OpenClawChatSessionEntry] = []
+            let nodes = section.nodes.flatMap { fold($0, into: &unlistedParentRuns) }
+            return nodes.isEmpty ? nil : Section(id: section.id, title: section.title, nodes: nodes)
+        }
     }
 
     static func sidebarAgentID(_ session: OpenClawChatSessionEntry) -> String? {

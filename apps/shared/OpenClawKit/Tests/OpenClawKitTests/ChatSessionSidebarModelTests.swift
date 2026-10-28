@@ -898,6 +898,35 @@ struct ChatSessionSidebarModelTests {
         #expect(nodes.map(\.id) == ["orphan", "root"])
     }
 
+    @Test func `folded subagent runs hand their children and activity to the parent`() {
+        let tree = ChatSessionSidebarModel.tree(from: [
+            self.entry(key: "agent:main:parent", childSessions: ["agent:main:subagent:run", "agent:main:child"]),
+            self.entry(
+                key: "agent:main:subagent:run",
+                spawnedBy: "agent:main:parent",
+                childSessions: ["agent:main:grandchild"],
+                status: "running"),
+            self.entry(key: "agent:main:child", parentSessionKey: "agent:main:parent"),
+            self.entry(key: "agent:main:grandchild", parentSessionKey: "agent:main:subagent:run"),
+            self.entry(key: "subagent:home-run", childSessions: ["agent:main:promoted"]),
+            self.entry(key: "agent:main:promoted", spawnedBy: "subagent:home-run"),
+            self.entry(key: "agent:main:subagent:orphan-run"),
+        ])
+
+        let nodes = ChatSessionSidebarModel.foldingSubagentRuns([.init(id: "recent", title: nil, nodes: tree)])
+            .flatMap(\.nodes)
+
+        #expect(nodes.map(\.id) == ["agent:main:parent", "agent:main:promoted"])
+        #expect(Set(nodes[0].children.map(\.id)) == ["agent:main:grandchild", "agent:main:child"])
+        #expect(nodes[0].foldedSessions.map(\.key) == ["agent:main:subagent:run"])
+        #expect(nodes[0].badges.runningCount == 1)
+        #expect(ChatSessionSidebarModel.foldingSubagentRuns([
+            .init(id: "recent", title: nil, nodes: ChatSessionSidebarModel.tree(from: [
+                self.entry(key: "agent:main:subagent:only"),
+            ])),
+        ]).isEmpty)
+    }
+
     @Test func `sessions without hierarchy data keep flat ordering`() {
         let nodes = ChatSessionSidebarModel.tree(from: [
             self.entry(key: "a"),

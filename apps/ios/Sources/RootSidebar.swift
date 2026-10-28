@@ -11,6 +11,7 @@ struct RootSidebar: View {
     @State private var isSearchActive = false
     @State private var showsPagesEditor = false
     @State private var presentedAttention: OpenClawChatAttentionPresentation?
+    @State private var childExpansion: [String: Bool] = [:]
     @FocusState private var isSearchFocused: Bool
     @AppStorage("sidebar.pinnedPages") private var pinnedPagesStorage: String = ""
 
@@ -402,10 +403,10 @@ struct RootSidebar: View {
                         self.sectionTitle(title)
                         Spacer(minLength: 0)
                         self.attentionBadges(
-                            for: Self.flattened(section.nodes).map(\.session), targetID: "section:\(section.id)")
+                            for: section.nodes.flatMap(\.previewSessions), targetID: "section:\(section.id)")
                     }
-                    ForEach(self.sessionNodes(for: section)) { node in
-                        self.sessionButton(node, rowPass: rowPass)
+                    ForEach(self.sessionRows(for: section, rowPass: rowPass)) { row in
+                        self.sessionButton(row, rowPass: rowPass)
                     }
                 }
             }
@@ -450,8 +451,8 @@ struct RootSidebar: View {
                 .accessibilityLabel(String(localized: "Edit Pages"))
             }
             self.homeRow
-            ForEach(pinnedSessionNodes) { node in
-                self.sessionButton(node, rowPass: rowPass)
+            ForEach(self.sessionRows(pinnedSessionNodes, rowPass: rowPass)) { row in
+                self.sessionButton(row, rowPass: rowPass)
             }
             ForEach(self.pinnedPages) { destination in
                 self.destinationButton(destination)
@@ -581,25 +582,29 @@ struct RootSidebar: View {
         }
         var remainingSections = sections
         let pinnedSection = remainingSections.remove(at: pinnedIndex)
-        return SessionLayout(
-            pinnedNodes: self.flattened(pinnedSection.nodes),
-            sections: remainingSections)
+        return SessionLayout(pinnedNodes: pinnedSection.nodes, sections: remainingSections)
     }
 
     private var sessionCategories: [String] {
         CommandSessionGrouping.categories(from: self.model.sessions, knownGroups: SessionGroupStore.load())
     }
 
-    private static func flattened(_ nodes: [ChatSessionSidebarModel.Node]) -> [ChatSessionSidebarModel.Node] {
-        nodes.flatMap { [$0] + self.flattened($0.children) }
+    private func sessionRows(
+        _ nodes: [ChatSessionSidebarModel.Node],
+        rowPass: SessionRowPass) -> [SessionTreeRow]
+    {
+        Self.sessionTreeRows(nodes, selectedSessionKey: rowPass.selectedSessionKey, expansion: self.childExpansion)
     }
 
-    private func sessionNodes(for section: ChatSessionSidebarModel.Section) -> [ChatSessionSidebarModel.Node] {
-        let nodes = Self.flattened(section.nodes)
+    private func sessionRows(
+        for section: ChatSessionSidebarModel.Section,
+        rowPass: SessionRowPass) -> [SessionTreeRow]
+    {
+        // The cap counts top-level conversations; expanding one never pushes another out.
         guard section.id == "recent", let limit = Self.recentSessionCap(searchText: self.searchText) else {
-            return nodes
+            return self.sessionRows(section.nodes, rowPass: rowPass)
         }
-        return Array(nodes.prefix(limit))
+        return self.sessionRows(Array(section.nodes.prefix(limit)), rowPass: rowPass)
     }
 
     static func recentSessionCap(searchText: String) -> Int? {
@@ -614,9 +619,10 @@ struct RootSidebar: View {
     }
 
     private func sessionButton(
-        _ node: ChatSessionSidebarModel.Node,
+        _ row: SessionTreeRow,
         rowPass: SessionRowPass) -> some View
     {
+        let node = row.node
         let session = node.session
         let isSelected = session.key == rowPass.selectedSessionKey
         return HStack(spacing: 0) {
@@ -704,8 +710,35 @@ struct RootSidebar: View {
             .accessibilityValue(Self.sessionAccessibilityValue(
                 isPinned: session.pinned == true,
                 isUnread: session.unread == true))
-            self.attentionBadges(for: Self.flattened([node]).map(\.session), targetID: "session:\(session.key)")
+            if !node.children.isEmpty {
+                self.childToggle(row)
+            }
+            self.attentionBadges(for: node.previewSessions, targetID: "session:\(session.key)")
         }
+        // Cap the indent so deep chains keep room for their titles.
+        .padding(.leading, CGFloat(min(row.depth, 3)) * 14)
+    }
+
+    private func childToggle(_ row: SessionTreeRow) -> some View {
+        Button {
+            self.childExpansion[row.id] = !row.isExpanded
+        } label: {
+            HStack(spacing: 2) {
+                Image(systemName: row.isExpanded ? "chevron.down" : "chevron.right")
+                    .font(OpenClawType.caption2Bold)
+                Text(row.node.children.count, format: .number)
+                    .font(OpenClawType.caption2Medium)
+                    .monospacedDigit()
+            }
+            .frame(minWidth: 36, minHeight: 44)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .foregroundStyle(OpenClawSidebarPalette.muted)
+        .accessibilityLabel(row.isExpanded
+            ? String(localized: "Collapse child sessions")
+            : String(localized: "Expand child sessions"))
+        .accessibilityValue(Text(row.node.children.count, format: .number))
     }
 
     private func attentionBadges(for sessions: [OpenClawChatSessionEntry], targetID: String) -> some View {
@@ -857,6 +890,41 @@ struct RootSidebar: View {
     private func dismissSidebar() {
         self.isSearchFocused = false
         self.hideSidebar()
+    }
+}
+
+extension RootSidebar {
+    struct SessionTreeRow: Identifiable, Equatable {
+        let node: ChatSessionSidebarModel.Node
+        let depth: Int
+        let isExpanded: Bool
+
+        var id: String {
+            self.node.id
+        }
+    }
+
+    /// Like the Control UI sidebar, child sessions start collapsed unless one of them is open;
+    /// after an explicit toggle, that choice wins.
+    static func sessionTreeRows(
+        _ nodes: [ChatSessionSidebarModel.Node],
+        selectedSessionKey: String,
+        expansion: [String: Bool],
+        depth: Int = 0) -> [SessionTreeRow]
+    {
+        func containsSelection(_ nodes: [ChatSessionSidebarModel.Node]) -> Bool {
+            nodes.contains { $0.id == selectedSessionKey || containsSelection($0.children) }
+        }
+        return nodes.flatMap { node -> [SessionTreeRow] in
+            let isExpanded = !node.children.isEmpty && (expansion[node.id] ?? containsSelection(node.children))
+            let row = SessionTreeRow(node: node, depth: depth, isExpanded: isExpanded)
+            guard isExpanded else { return [row] }
+            return [row] + self.sessionTreeRows(
+                node.children,
+                selectedSessionKey: selectedSessionKey,
+                expansion: expansion,
+                depth: depth + 1)
+        }
     }
 }
 
