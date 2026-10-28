@@ -30,6 +30,11 @@ jobs:
           sudo xcode-select -s "$XCODE_APP"
           xcodebuild -version
           swift --version
+      - name: Native asset dependencies
+        run: |
+          corepack enable
+          pnpm install --frozen-lockfile
+          node scripts/prepare-apple-mermaid.mjs
       - name: Shared sidebar and palette tests
         working-directory: apps/shared/OpenClawKit
         run: |
@@ -77,10 +82,11 @@ jobs:
           echo "$tools" >> "$GITHUB_PATH"
           watch_toolchain="$(awk -F '"' '/^channel =/ { print $2; exit }' apps/shared/OpenClawWatchRTC/rust-toolchain.toml)"
           rustup toolchain install "$watch_toolchain" --profile minimal --component rust-src
-      - name: Install JS deps
+      - name: Install JS deps and Apple assets
         run: |
           corepack enable
           pnpm install --frozen-lockfile
+          node scripts/prepare-apple-mermaid.mjs
       - name: Generate project
         run: pnpm ios:gen
       - name: Pick simulator
