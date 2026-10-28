@@ -1,0 +1,148 @@
+name: ios-chat-switch-evidence
+
+on:
+  push:
+    branches: ["evidence/**"]
+
+permissions:
+  contents: read
+
+jobs:
+  trace:
+    runs-on: xcode-27
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Select Xcode
+        run: |
+          sudo xcode-select -s /Applications/Xcode.app/Contents/Developer
+          xcodebuild -version
+          xcrun simctl list runtimes
+
+      - uses: pnpm/action-setup@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+
+      - name: Install native asset dependencies
+        env:
+          CI: "true"
+        run: |
+          pnpm install --frozen-lockfile --prefer-offline --optional \
+            --filter '@openclaw/mermaid-renderer...' --filter '@openclaw/gateway-protocol...' \
+            --config.ignore-scripts=false --config.engine-strict=false \
+            --config.enable-pre-post-scripts=true
+
+      - name: Prepare Apple Mermaid assets
+        run: node scripts/prepare-apple-mermaid.mjs
+
+      - name: Install Swift tools
+        run: |
+          tools="$RUNNER_TEMP/swift-tools"
+          ./scripts/install-xcodegen.sh "$tools"
+          ./scripts/install-swift-tools.sh "$tools"
+          echo "REAL_SWIFT_TOOLS=$tools" >> "$GITHUB_ENV"
+          # Evidence-only instrumentation is not lint-clean; the build uses no-op lint shims and
+          # the real linters run as a separate report step below.
+          shims="$RUNNER_TEMP/swift-shims"
+          mkdir -p "$shims"
+          printf '#!/bin/bash\n[[ "$1" == "--version" ]] && echo 0.63.1\nexit 0\n' > "$shims/swiftformat"
+          printf '#!/bin/bash\n[[ "$1" == "version" ]] && echo 0.65.1\n[[ " $* " == *" json "* ]] && echo "[]"\nexit 0\n' > "$shims/swiftlint"
+          chmod +x "$shims/swiftformat" "$shims/swiftlint"
+          cp "$tools/xcodegen" "$shims/xcodegen"
+          echo "$shims" >> "$GITHUB_PATH"
+          ln -sfn "$shims/swiftformat" "$(brew --prefix)/bin/swiftformat"
+          ln -sfn "$shims/swiftlint" "$(brew --prefix)/bin/swiftlint"
+          ln -sfn "$shims/xcodegen" "$(brew --prefix)/bin/xcodegen"
+
+      - name: Lint report (real tools, non-blocking)
+        continue-on-error: true
+        run: |
+          "$REAL_SWIFT_TOOLS/swiftformat" --lint --config config/swiftformat \
+            apps/ios/Sources/Chat/AppleReviewDemoChatTransport.swift \
+            apps/ios/UITests/OpenClawSnapshotUITests.swift \
+            apps/shared/OpenClawKit/Sources/OpenClawChatUI/ChatView.swift \
+            apps/shared/OpenClawKit/Sources/OpenClawChatUI/ChatScrollCommand.swift || true
+          "$REAL_SWIFT_TOOLS/swiftlint" lint --strict --config apps/ios/.swiftlint.yml \
+            apps/ios/Sources/Chat/AppleReviewDemoChatTransport.swift \
+            apps/ios/UITests/OpenClawSnapshotUITests.swift || true
+
+      - name: Install Watch Rust toolchain
+        run: |
+          export PATH="$HOME/.cargo/bin:$PATH"
+          watch_toolchain="$(awk -F '"' '/^channel =/ { print $2; exit }' apps/shared/OpenClawWatchRTC/rust-toolchain.toml)"
+          rustup toolchain install "$watch_toolchain" --profile minimal --component rust-src
+
+      - name: Generate project
+        run: pnpm ios:gen
+
+      - name: Create simulator
+        run: |
+          runtime="$(xcrun simctl list runtimes --json | node -e '
+            const r = JSON.parse(require("fs").readFileSync(0, "utf8")).runtimes
+              .filter((x) => x.isAvailable && x.platform === "iOS" && x.version.startsWith("27.0"));
+            if (!r.length) throw new Error("no iOS 27.0 runtime");
+            process.stdout.write(r[0].identifier);
+          ')"
+          sim="$(xcrun simctl create "Chat switch evidence" "iPhone 17 Pro" "$runtime")"
+          xcrun simctl boot "$sim"
+          xcrun simctl bootstatus "$sim" -b
+          xcrun simctl status_bar "$sim" override --time 09:41 --batteryState charged --batteryLevel 100
+          echo "SIM=$sim" >> "$GITHUB_ENV"
+
+      - name: Before and after runs
+        run: |
+          out="$RUNNER_TEMP/evidence"
+          mkdir -p "$out"
+          build() {
+            xcodebuild -project apps/ios/OpenClaw.xcodeproj -scheme OpenClawUITests \
+              -configuration Debug -destination "platform=iOS Simulator,id=$SIM" \
+              -derivedDataPath "$RUNNER_TEMP/dd" build-for-testing \
+              > "$out/build-$1.log" 2>&1 || { tail -c 30000 "$out/build-$1.log"; exit 1; }
+            tail -c 2000 "$out/build-$1.log"
+          }
+          run_one() {
+            local name="$1" test="$2" status=0
+            xcrun simctl io "$SIM" recordVideo --codec h264 --force "$out/$name.mp4" &
+            local rec=$!
+            sleep 2
+            xcodebuild -project apps/ios/OpenClaw.xcodeproj -scheme OpenClawUITests \
+              -configuration Debug -destination "platform=iOS Simulator,id=$SIM" \
+              -derivedDataPath "$RUNNER_TEMP/dd" -testLanguage en -testRegion US \
+              -parallel-testing-enabled NO -collect-test-diagnostics never \
+              -resultBundlePath "$out/$name.xcresult" \
+              -only-testing:"OpenClawUITests/OpenClawSnapshotUITests/$test" \
+              test-without-building > "$out/$name.log" 2>&1 || status=$?
+            kill -INT "$rec" || true
+            wait "$rec" || true
+            grep -E "SWITCHTRACE|error:|Test Case|failed|passed" "$out/$name.log" | head -200 || true
+            xcrun xcresulttool export attachments --path "$out/$name.xcresult" --output-path "$out/$name-attachments" || true
+            echo "$name exit=$status"
+          }
+          stage() {
+            local s="$1" since
+            build "$s"
+            since="$(date '+%Y-%m-%d %H:%M:%S')"
+            run_one "$s-trace" testChatSwitchPositionTrace
+            run_one "$s-regression" testSwitchingChatsOpensAtLatestMessage
+            xcrun simctl spawn "$SIM" log show --start "$since" --style compact \
+              --predicate 'subsystem == "ai.openclaw.scrolldebug"' > "$out/$s-scroll-debug.log" || true
+          }
+          stage before
+          git apply --whitespace=nowarn .github/evidence/fix.patch
+          git diff --stat
+          stage after
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: chat-switch-evidence
+          path: |
+            ${{ runner.temp }}/evidence/*.mp4
+            ${{ runner.temp }}/evidence/*.log
+            ${{ runner.temp }}/evidence/*-attachments
+          retention-days: 7

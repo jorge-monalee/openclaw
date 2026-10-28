@@ -1,4 +1,7 @@
 import SwiftUI
+import os
+
+let scrollDebug = Logger(subsystem: "ai.openclaw.scrolldebug", category: "scroll")
 #if os(macOS)
 import AppKit
 #endif
@@ -489,7 +492,10 @@ extension OpenClawChatView {
             // distance so a coalesced update still reconciles the stored live-edge state.
             .onScrollGeometryChange(for: CGFloat.self) { geometry in
                 geometry.contentSize.height - geometry.visibleRect.maxY
-            } action: { _, distanceFromBottom in
+            } action: { old, distanceFromBottom in
+                if abs(old - distanceFromBottom) > 150 {
+                    scrollDebug.notice("geometry distance \(Int(old), privacy: .public) -> \(Int(distanceFromBottom), privacy: .public) performed=\(self.hasPerformedInitialScroll, privacy: .public)")
+                }
                 let isAtLiveEdge = distanceFromBottom <= Layout.liveEdgeThreshold
                 guard self.isAtLiveEdge != isAtLiveEdge else { return }
                 self.isAtLiveEdge = isAtLiveEdge
@@ -500,6 +506,7 @@ extension OpenClawChatView {
                 }
             }
             .onScrollPhaseChange { _, phase in
+                scrollDebug.notice("phase \(String(describing: phase), privacy: .public) performed=\(self.hasPerformedInitialScroll, privacy: .public)")
                 guard self.hasPerformedInitialScroll else { return }
                 if phase == .interacting {
                     self.restoresLiveEdgeAfterKeyboardShows = false
@@ -543,12 +550,14 @@ extension OpenClawChatView {
                 self.dismissKeyboardIfNeeded()
             })
         .onChange(of: self.viewModel.isLoading) { _, isLoading in
+            scrollDebug.notice("isLoading -> \(isLoading, privacy: .public) performed=\(self.hasPerformedInitialScroll, privacy: .public) rows=\(self.viewModel.messages.count, privacy: .public) session=\(self.viewModel.sessionKey, privacy: .public)")
             guard !isLoading, !self.hasPerformedInitialScroll else { return }
             self.restoreInitialScrollPosition()
             self.hasPerformedInitialScroll = true
             self.lastTurnStartID = self.latestVisibleTurnStartID
         }
-        .onChange(of: self.viewModel.currentSessionTarget) { _, _ in
+        .onChange(of: self.viewModel.currentSessionTarget) { _, target in
+            scrollDebug.notice("sessionTarget -> \(target.sessionKey, privacy: .public) loading=\(self.viewModel.isLoading, privacy: .public) rows=\(self.viewModel.messages.count, privacy: .public)")
             self.speech?.stop()
             self.scrollCommand.cancel()
             self.hasPerformedInitialScroll = false
@@ -1199,6 +1208,7 @@ extension OpenClawChatView {
     }
 
     private func restoreInitialScrollPosition() {
+        scrollDebug.notice("restore rows=\(self.viewModel.messages.count, privacy: .public) loading=\(self.viewModel.isLoading, privacy: .public)")
         if chatReaderInitialRestorePolicy() == .latestTurn,
            let latestTurnStartID = self.latestVisibleTurnStartID
         {
@@ -1216,6 +1226,7 @@ extension OpenClawChatView {
     }
 
     private func handleTimelineChange() {
+        scrollDebug.notice("timeline rows=\(self.viewModel.messages.count, privacy: .public) performed=\(self.hasPerformedInitialScroll, privacy: .public) loading=\(self.viewModel.isLoading, privacy: .public)")
         guard self.hasPerformedInitialScroll else { return }
         // A search result is an explicit reading position. Incoming replies
         // must not pull the reader away until they leave Find.
@@ -1285,6 +1296,7 @@ extension OpenClawChatView {
         to id: UUID,
         anchor: UnitPoint = .bottom)
     {
+        scrollDebug.notice("enqueue bottom=\(id == self.scrollerBottomID, privacy: .public) anchorY=\(anchor.y, privacy: .public)")
         self.scrollCommand.enqueue(
             to: id,
             anchor: anchor,

@@ -1260,6 +1260,49 @@ final class OpenClawSnapshotUITests: XCTestCase {
         XCTAssertFalse(first.exists && first.isHittable)
     }
 
+    /// Evidence only: samples where the reader sits after each chat switch.
+    func testChatSwitchPositionTrace() throws {
+        self.launchApp(
+            for: ScreenshotTarget(
+                initialTab: "chat",
+                initialDestination: "chat",
+                name: "chat-switch-trace"),
+            additionalArguments: ["--openclaw-chat-switch-fixture", "--openclaw-slow-model-catalog-fixture"])
+        let app = try XCTUnwrap(self.app)
+        XCTAssertTrue(app.staticTexts["OPENCLAW_SWITCH_A_LATEST"].waitForExistence(timeout: 15))
+        sleep(7)
+        self.attachScreenshot(named: "trace-0-A-start")
+        let steps: [(title: String, id: String)] = [
+            ("Launch plan", "B"),
+            ("Home", "A"),
+            ("Launch plan", "B"),
+        ]
+        for (index, step) in steps.enumerated() {
+            try self.selectSidebarDestination(step.title)
+            let started = Date()
+            var attached = false
+            while Date().timeIntervalSince(started) < 9 {
+                let elapsed = Int(Date().timeIntervalSince(started) * 1000)
+                let latest = app.staticTexts["OPENCLAW_SWITCH_\(step.id)_LATEST"]
+                let first = app.staticTexts["OPENCLAW_SWITCH_\(step.id)_FIRST"]
+                let composer = app.otherElements["chat-composer-surface"]
+                print(
+                    "SWITCHTRACE step=\(index + 1) to=\(step.id) t=\(elapsed)ms " +
+                        "latest=\(latest.exists)/\(latest.exists && latest.isHittable) " +
+                        "latestMaxY=\(latest.exists ? Int(latest.frame.maxY) : -1) " +
+                        "first=\(first.exists)/\(first.exists && first.isHittable) " +
+                        "composerMinY=\(composer.exists ? Int(composer.frame.minY) : -1) " +
+                        "jump=\(app.buttons["Jump to latest reply"].exists)")
+                if !attached, elapsed > 300 {
+                    self.attachScreenshot(named: "trace-\(index + 1)-\(step.id)-early")
+                    attached = true
+                }
+                usleep(150_000)
+            }
+            self.attachScreenshot(named: "trace-\(index + 1)-\(step.id)-settled")
+        }
+    }
+
     func testTaskListLongPressOffersRefreshDismissAndClear() throws {
         self.launchApp(
             for: Self.chatScreenshotTarget,

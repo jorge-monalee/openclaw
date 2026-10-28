@@ -29,6 +29,7 @@ struct ChatScrollCommand {
     }
 
     mutating func cancel() {
+        if self.pending != nil { scrollDebug.notice("command cancel") }
         self.pending = nil
     }
 
@@ -56,8 +57,10 @@ struct ChatScrollCommandModifier: ViewModifier {
                 // Let the new rows lay out without retaining an ID-based scroll constraint.
                 DispatchQueue.main.async {
                     guard let command = self.command.take(request, sessionTarget: self.currentSessionTarget()) else {
+                        scrollDebug.notice("command dropped")
                         return
                     }
+                    scrollDebug.notice("command scrollTo anchorY=\(command.anchor.y, privacy: .public)")
                     withTransaction(Transaction(animation: nil)) {
                         proxy.scrollTo(command.targetID, anchor: command.anchor)
                     }
