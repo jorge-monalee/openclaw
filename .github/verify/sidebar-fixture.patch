@@ -1,0 +1,78 @@
+diff --git a/apps/ios/Sources/Chat/AppleReviewDemoChatTransport.swift b/apps/ios/Sources/Chat/AppleReviewDemoChatTransport.swift
+index 0c8085b8455..536f111c3d3 100644
+--- a/apps/ios/Sources/Chat/AppleReviewDemoChatTransport.swift
++++ b/apps/ios/Sources/Chat/AppleReviewDemoChatTransport.swift
+@@ -404,6 +404,40 @@ struct LocalFixtureChatTransport: OpenClawChatTransport {
+                 status: "running",
+                 hasActiveRun: true))
+         }
++        if ProcessInfo.processInfo.arguments.contains("--openclaw-sidebar-nesting-fixture") {
++            // Temporary PR-evidence fixture: synthetic parent, child, subagent, and archived rows.
++            let now = Date().timeIntervalSince1970 * 1000
++            func row(_ key: String, _ label: String, minutesAgo: Double) -> OpenClawChatSessionEntry {
++                var row = OpenClawChatSessionEntry(key: key)
++                row.label = label
++                row.sessionId = key
++                row.updatedAt = now - minutesAgo * 60000
++                return row
++            }
++            var homeRun = row("agent:main:subagent:triage", "Subagent: Inbox triage", minutesAgo: 1)
++            homeRun.spawnedBy = self.fixture.sessionKey
++            homeRun.status = "running"
++            homeRun.hasActiveRun = true
++            var release = row("agent:main:dashboard:release", "Release plan", minutesAgo: 2)
++            release.childSessions = [
++                "agent:main:subagent:notes", "agent:main:subagent:research", "agent:main:dashboard:changelog",
++            ]
++            var notes = row("agent:main:subagent:notes", "Subagent: Collect release notes", minutesAgo: 3)
++            notes.spawnedBy = release.key
++            notes.status = "running"
++            notes.hasActiveRun = true
++            var research = row("agent:main:subagent:research", "Subagent: Competitor research", minutesAgo: 4)
++            research.spawnedBy = release.key
++            research.status = "done"
++            var changelog = row("agent:main:dashboard:changelog", "Changelog draft", minutesAgo: 5)
++            changelog.parentSessionKey = release.key
++            let trip = row("agent:main:dashboard:trip", "Trip planning", minutesAgo: 6)
++            var oldPlan = row("agent:main:dashboard:old-plan", "Archived: Q3 plan", minutesAgo: 7)
++            oldPlan.archived = true
++            var oldRun = row("agent:main:subagent:old-export", "Subagent: Old export", minutesAgo: 8)
++            oldRun.spawnedBy = oldPlan.key
++            sessions += [homeRun, release, notes, research, changelog, trip, oldPlan, oldRun]
++        }
+         if archived {
+             sessions = []
+         }
+diff --git a/apps/ios/UITests/OpenClawSnapshotUITests.swift b/apps/ios/UITests/OpenClawSnapshotUITests.swift
+index 76618c62e6b..cd35b1d0e05 100644
+--- a/apps/ios/UITests/OpenClawSnapshotUITests.swift
++++ b/apps/ios/UITests/OpenClawSnapshotUITests.swift
+@@ -186,6 +186,28 @@ final class OpenClawSnapshotUITests: XCTestCase {
+         XCTAssertTrue(waiting.waitForNonExistence(timeout: 5))
+     }
+ 
++    func testSidebarNestingEvidence() throws {
++        try XCTSkipIf(UIDevice.current.userInterfaceIdiom != .phone, "Phone sidebar only")
++        self.launchApp(
++            for: ScreenshotTarget(initialTab: "chat", initialDestination: "chat", name: "sidebar-nesting"),
++            additionalArguments: ["--openclaw-sidebar-nesting-fixture"])
++        let app = try XCTUnwrap(self.app)
++        let showSidebar = app.buttons["RootTabs.Sidebar.Show"]
++        XCTAssertTrue(showSidebar.waitForExistence(timeout: 8))
++        showSidebar.tap()
++        let trip = app.descendants(matching: .any)
++            .matching(NSPredicate(format: "label CONTAINS %@", "Trip planning")).firstMatch
++        XCTAssertTrue(trip.waitForExistence(timeout: 10))
++        Thread.sleep(forTimeInterval: 1.5)
++        self.attachScreenshot(named: "sidebar-nesting-default")
++        let expand = app.buttons["Expand child sessions"].firstMatch
++        if expand.waitForExistence(timeout: 2) {
++            expand.tap()
++            Thread.sleep(forTimeInterval: 1.5)
++            self.attachScreenshot(named: "sidebar-nesting-expanded")
++        }
++    }
++
+     func testFinishedTurnShowsWaitingHelperAndOpensItsSession() throws {
+         self.launchApp(
+             for: Self.chatScreenshotTarget,
