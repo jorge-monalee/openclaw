@@ -1,8 +1,8 @@
 diff --git a/apps/ios/Sources/Chat/AppleReviewDemoChatTransport.swift b/apps/ios/Sources/Chat/AppleReviewDemoChatTransport.swift
-index 0c8085b8455..536f111c3d3 100644
+index 0c8085b8455..d157ee3c94f 100644
 --- a/apps/ios/Sources/Chat/AppleReviewDemoChatTransport.swift
 +++ b/apps/ios/Sources/Chat/AppleReviewDemoChatTransport.swift
-@@ -404,6 +404,40 @@ struct LocalFixtureChatTransport: OpenClawChatTransport {
+@@ -404,6 +404,45 @@ struct LocalFixtureChatTransport: OpenClawChatTransport {
                  status: "running",
                  hasActiveRun: true))
          }
@@ -16,10 +16,13 @@ index 0c8085b8455..536f111c3d3 100644
 +                row.updatedAt = now - minutesAgo * 60000
 +                return row
 +            }
-+            var homeRun = row("agent:main:subagent:triage", "Subagent: Inbox triage", minutesAgo: 1)
++            var homeRun = row("agent:main:subagent:triage", "Inbox triage", minutesAgo: 1)
 +            homeRun.spawnedBy = self.fixture.sessionKey
 +            homeRun.status = "running"
 +            homeRun.hasActiveRun = true
++            if let home = sessions.firstIndex(where: { $0.key == self.fixture.sessionKey }) {
++                sessions[home].childSessions = (sessions[home].childSessions ?? []) + [homeRun.key]
++            }
 +            var release = row("agent:main:dashboard:release", "Release plan", minutesAgo: 2)
 +            release.childSessions = [
 +                "agent:main:subagent:notes", "agent:main:subagent:research", "agent:main:dashboard:changelog",
@@ -28,9 +31,11 @@ index 0c8085b8455..536f111c3d3 100644
 +            notes.spawnedBy = release.key
 +            notes.status = "running"
 +            notes.hasActiveRun = true
-+            var research = row("agent:main:subagent:research", "Subagent: Competitor research", minutesAgo: 4)
++            var research = row("agent:main:subagent:research", "Competitor research", minutesAgo: 4)
 +            research.spawnedBy = release.key
-+            research.status = "done"
++            research.status = "failed"
++            research.unread = true
++            research.lastRunError = "Competitor research timed out"
 +            var changelog = row("agent:main:dashboard:changelog", "Changelog draft", minutesAgo: 5)
 +            changelog.parentSessionKey = release.key
 +            let trip = row("agent:main:dashboard:trip", "Trip planning", minutesAgo: 6)
