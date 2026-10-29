@@ -1,0 +1,55 @@
+# Temporary fork-only SwiftFormat/SwiftLint checks for openclaw/openclaw#187077.
+name: Verify Swift lint
+
+on:
+  push:
+    branches: [verify/ios-chat-list-nesting]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  HEAD_SHA: 02c9be19ae23ed575d13a0975eb6bb4f135e02f7
+  XCODE_APP: /Applications/Xcode_26.6.app
+
+jobs:
+  lint:
+    runs-on: macos-26
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.HEAD_SHA }}
+          fetch-depth: 1
+      - name: Select Xcode
+        run: |
+          sudo xcode-select -s "$XCODE_APP"
+          xcodebuild -version
+      - name: Swift tools
+        run: |
+          tools="$RUNNER_TEMP/swift-tools"
+          ./scripts/install-swift-tools.sh "$tools"
+          echo "$tools" >> "$GITHUB_PATH"
+      - name: Format (ios)
+        run: ./scripts/format-swift.sh ios
+      - name: Show proposed changes
+        if: ${{ always() }}
+        run: |
+          set +e
+          node scripts/ios-write-swift-filelist.mjs
+          (
+            cd apps/ios
+            swiftformat --config ../../config/swiftformat \
+              --unexclude "$PWD/Sources,$PWD/ShareExtension,$PWD/ActivityWidget,$PWD/WatchApp,$PWD/../shared/OpenClawKit/Sources/OpenClawChatUI,$PWD/../shared/OpenClawKit/Sources/OpenClawKit,$PWD/../shared/OpenClawKit/Sources/OpenClawNativeState,$PWD/../shared/OpenClawKit/Sources/OpenClawProtocol,$PWD/../swabble/Sources/SwabbleKit" \
+              --filelist SwiftSources.input.xcfilelist
+          )
+          git --no-pager diff | head -400
+      - name: Format (macos)
+        run: ./scripts/format-swift.sh macos
+      - name: Lint (ios)
+        if: ${{ !cancelled() }}
+        run: ./scripts/lint-swift.sh ios
+      - name: Lint (macos)
+        if: ${{ !cancelled() }}
+        run: ./scripts/lint-swift.sh macos
