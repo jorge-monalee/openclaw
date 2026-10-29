@@ -10,7 +10,7 @@ permissions:
   contents: read
 
 env:
-  HEAD_SHA: 235fbf8ae0f4ff37e3665aecd67a4313179c3f15
+  HEAD_SHA: 34d59f2afdcc9c359a568b173419126a9e3a8810
   XCODE_APP: /Applications/Xcode_26.6.app
 
 jobs:
@@ -58,4 +58,4 @@ jobs:
         run: |
           corepack enable
           pnpm install --frozen-lockfile
-          pnpm native:i18n:check
+          pnpm native:i18n:verify
