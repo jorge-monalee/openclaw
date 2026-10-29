@@ -153,18 +153,24 @@ public enum ChatSessionSidebarModel {
         /// Failure text a collapsed child or folded run still owes the user, so the
         /// surviving parent row can show it (ui/src/components/app-sidebar-session-tree.ts:41).
         public var failedDescendantSummary: String? {
-            self.previewSessions.dropFirst().compactMap { entry -> String? in
-                guard ChatSessionSidebarModel.isUnreadFailure(entry) else { return nil }
-                let reason = ChatPayloadDecoding
-                    .trimmedNonEmptyString(entry.lastRunError) ?? String(localized: "Thread failed")
-                let name = ChatPayloadDecoding.trimmedNonEmptyString(entry.label) ??
-                    ChatPayloadDecoding.trimmedNonEmptyString(entry.displayName) ?? entry.key
-                return String(
-                    format: String(localized: "Child session %@ failed: %@"),
-                    name,
-                    reason)
-            }.first
+            ChatSessionSidebarModel.failedSessionSummary(in: self.previewSessions.dropFirst())
         }
+    }
+
+    /// The first unread failure among sessions that have no row of their own, named so
+    /// the row that survives them can explain it.
+    public static func failedSessionSummary(in sessions: some Sequence<OpenClawChatSessionEntry>) -> String? {
+        sessions.lazy.compactMap { entry -> String? in
+            guard self.isUnreadFailure(entry) else { return nil }
+            let reason = ChatPayloadDecoding
+                .trimmedNonEmptyString(entry.lastRunError) ?? String(localized: "Thread failed")
+            let name = ChatPayloadDecoding.trimmedNonEmptyString(entry.label) ??
+                ChatPayloadDecoding.trimmedNonEmptyString(entry.displayName) ?? entry.key
+            return String(
+                format: String(localized: "Child session %@ failed: %@"),
+                name,
+                reason)
+        }.first
     }
 
     public struct Section: Identifiable, Equatable, Sendable {
@@ -204,6 +210,25 @@ public enum ChatSessionSidebarModel {
             hasUnread: base.hasUnread || extra.hasUnread)
     }
 
+    /// The conversation that owns a run: a forward child link first, as the section tree
+    /// nests it, then the run's own backrefs, walking up through parent runs that have no
+    /// row. Section folding and Home both resolve here so a run lands on one surviving row.
+    private static func owningConversationKey(
+        of run: OpenClawChatSessionEntry,
+        ownerByChild: [String: String],
+        entry: (String) -> OpenClawChatSessionEntry?) -> String?
+    {
+        var session = run
+        for _ in 0..<16 {
+            let parent = [ownerByChild[session.key], session.spawnedBy, session.parentSessionKey]
+                .compactMap { ChatPayloadDecoding.trimmedNonEmptyString($0).flatMap(entry) }.first
+            guard let parent else { return nil }
+            if !self.isSidebarRun(parent.key) { return parent.key }
+            session = parent
+        }
+        return nil
+    }
+
     /// ui/src/components/app-sidebar-session-tree.ts:127 never lists a subagent run as a row:
     /// its persistent children take its place and the row that spawned it keeps its
     /// badges and attention. Pinning and groups place rows before this fold, so a run can
@@ -212,43 +237,18 @@ public enum ChatSessionSidebarModel {
     public static func foldingSubagentRuns(_ sections: [Section]) -> [Section] {
         var nodesByKey: [String: Node] = [:]
         var ownerByChild: [String: String] = [:]
-        var sectionKeys: [Set<String>] = []
 
-        func index(_ nodes: [Node]) -> Set<String> {
-            var keys: Set<String> = []
+        func index(_ nodes: [Node]) {
             for node in nodes {
                 if nodesByKey[node.id] == nil { nodesByKey[node.id] = node }
-                keys.insert(node.id)
                 for child in node.session.childSessions ?? [] where ownerByChild[child] == nil {
                     ownerByChild[child] = node.id
                 }
-                keys.formUnion(index(node.children))
+                index(node.children)
             }
-            return keys
         }
-        // A run's own child links outlive its row, so the listed roster names its owner.
-        func nextParentKey(of session: OpenClawChatSessionEntry) -> String? {
-            var keys: [String] = []
-            if let owner = ownerByChild[session.key] { keys.append(owner) }
-            keys.append(contentsOf: [session.spawnedBy, session.parentSessionKey]
-                .compactMap { ChatPayloadDecoding.trimmedNonEmptyString($0) })
-            return keys.first { nodesByKey[$0] != nil }
-        }
-        // The listed row that owns a run, walking through parent runs that have no row.
-        func parentRowKey(of session: OpenClawChatSessionEntry) -> String? {
-            var key = nextParentKey(of: session)
-            var hops = 0
-            while let current = key, hops < 16 {
-                guard let node = nodesByKey[current] else { return nil }
-                if !self.isSidebarRun(node.id) { return node.id }
-                key = nextParentKey(of: node.session)
-                hops += 1
-            }
-            return nil
-        }
-
         for section in sections {
-            sectionKeys.append(index(section.nodes))
+            index(section.nodes)
         }
 
         var foldedRuns: [String: [OpenClawChatSessionEntry]] = [:]
@@ -264,23 +264,30 @@ public enum ChatSessionSidebarModel {
                 hasNavigationChildren: node.hasNavigationChildren)
         }
 
-        func folding(_ nodes: [Node], localKeys: Set<String>) -> [Node] {
+        // `treeOwner` is the nearest conversation above these nodes in their section's tree.
+        func folding(_ nodes: [Node], treeOwner: String?) -> [Node] {
             var kept: [Node] = []
             var pending = nodes
             while !pending.isEmpty {
                 let child = pending.removeFirst()
                 guard self.isSidebarRun(child.session.key) else {
-                    kept.append(rebuilding(child, children: folding(child.children, localKeys: localKeys)))
+                    kept.append(rebuilding(child, children: folding(child.children, treeOwner: child.id)))
                     continue
                 }
-                if let parent = parentRowKey(of: child.session) {
-                    foldedRuns[parent, default: []].append(contentsOf: [child.session] + child.foldedSessions)
-                    // The parent's own tree already counted a run nested inside it.
-                    if !localKeys.contains(parent) {
-                        addedBadges[parent] = self.adding(
-                            self.node(session: child.session, children: []).badges,
-                            to: addedBadges[parent])
-                    }
+                let folded = [child.session] + child.foldedSessions
+                if let treeOwner {
+                    // The owner's badges already count every run nested in its tree.
+                    foldedRuns[treeOwner, default: []].append(contentsOf: folded)
+                } else if let parent = self.owningConversationKey(
+                    of: child.session,
+                    ownerByChild: ownerByChild,
+                    entry: { nodesByKey[$0]?.session })
+                {
+                    // A run left at the top of its section counted toward no row yet.
+                    foldedRuns[parent, default: []].append(contentsOf: folded)
+                    addedBadges[parent] = self.adding(
+                        self.node(session: child.session, children: []).badges,
+                        to: addedBadges[parent])
                 }
                 // The run's own conversations take its place in this section.
                 pending.insert(contentsOf: child.children, at: 0)
@@ -300,13 +307,8 @@ public enum ChatSessionSidebarModel {
                 hasNavigationChildren: node.hasNavigationChildren)
         }
 
-        var rebuilt: [Section] = []
-        for (offset, section) in sections.enumerated() {
-            let keys = offset < sectionKeys.count ? sectionKeys[offset] : []
-            rebuilt.append(Section(
-                id: section.id,
-                title: section.title,
-                nodes: folding(section.nodes, localKeys: keys)))
+        let rebuilt = sections.map {
+            Section(id: $0.id, title: $0.title, nodes: folding($0.nodes, treeOwner: nil))
         }
         return rebuilt.compactMap { section -> Section? in
             let nodes = section.nodes.map(applying)
@@ -318,30 +320,24 @@ public enum ChatSessionSidebarModel {
     /// Home is navigation, so its runs belong on that row the way the Control UI
     /// keeps Home's run summary on the agent header
     /// (ui/src/components/app-sidebar-agent-session-rows.ts:310). A run under a
-    /// listed child folds there instead, so this only follows runs.
+    /// listed child folds there instead.
     public static func foldedRuns(
         in sessions: [OpenClawChatSessionEntry],
         under parentKey: String) -> [OpenClawChatSessionEntry]
     {
-        var childrenByParent: [String: [OpenClawChatSessionEntry]] = [:]
         let rowsByKey = Dictionary(sessions.map { ($0.key, $0) }, uniquingKeysWith: { first, _ in first })
+        var ownerByChild: [String: String] = [:]
         for parent in sessions {
-            for childKey in parent.childSessions ?? [] {
-                guard let child = rowsByKey[childKey] else { continue }
-                childrenByParent[parent.key, default: []].append(child)
+            for child in parent.childSessions ?? [] where ownerByChild[child] == nil {
+                ownerByChild[child] = parent.key
             }
         }
-        var runs: [OpenClawChatSessionEntry] = []
-        var visited: Set<String> = [parentKey]
-        func collect(_ key: String) {
-            for child in childrenByParent[key] ?? [] {
-                guard self.isSidebarRun(child.key), visited.insert(child.key).inserted else { continue }
-                runs.append(child)
-                collect(child.key)
-            }
+        return sessions.filter { session in
+            self.isSidebarRun(session.key) && self.owningConversationKey(
+                of: session,
+                ownerByChild: ownerByChild,
+                entry: { rowsByKey[$0] }) == parentKey
         }
-        collect(parentKey)
-        return runs
     }
 
     static func sidebarAgentID(_ session: OpenClawChatSessionEntry) -> String? {

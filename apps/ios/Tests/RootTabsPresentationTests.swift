@@ -639,6 +639,28 @@ struct RootTabsPresentationTests {
         #expect(nodes.first?.children.map(\.id) == ["agent:main:dashboard:child"])
     }
 
+    @Test func `drawer row says its folded run is waiting for a slot`() throws {
+        let sessions = try JSONDecoder().decode([OpenClawChatSessionEntry].self, from: Data("""
+        [
+          {"key":"agent:main:main","updatedAt":900},
+          {"key":"agent:main:dashboard:idle","updatedAt":700,"status":"idle"},
+          {"key":"agent:main:subagent:queued","updatedAt":600,"spawnedBy":"agent:main:dashboard:idle",
+           "status":"queued"}
+        ]
+        """.utf8))
+        let nodes = RootSidebarModel.sections(
+            sessions: sessions,
+            query: "",
+            currentSessionKey: "agent:main:main",
+            mainSessionKey: "agent:main:main",
+            activeAgentID: "main",
+            groups: []).flatMap(\.nodes)
+
+        #expect(nodes.map(\.id) == ["agent:main:dashboard:idle"])
+        #expect(nodes.first?.badges.queuedCount == 1)
+        #expect(nodes.first.flatMap { RootSidebar.sessionSubtitle(for: $0) } == "Waiting for a concurrency slot")
+    }
+
     @Test func `drawer rows keep child sessions collapsed until one is open or toggled`() throws {
         let sessions = try Self.nestedSessions()
         func rows(selected: String, expansion: [String: Bool] = [:]) -> [String] {

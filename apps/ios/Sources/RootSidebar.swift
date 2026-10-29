@@ -467,8 +467,10 @@ struct RootSidebar: View {
         let isSelected = self.selectedDestination == .chat &&
             self.resolvedSelectedSessionKey.caseInsensitiveCompare(mainKey) == .orderedSame
         let mainSession = self.mainSessionEntry
-        // Runs Home started have no row of their own; their work and attention belong here.
-        let homeSessions = (mainSession.map { [$0] } ?? []) + self.homeRunSessions
+        // Runs Home started have no row of their own; their work, outcome, and attention belong here.
+        let homeRuns = self.homeRunSessions
+        let homeSessions = (mainSession.map { [$0] } ?? []) + homeRuns
+        let failedRun = ChatSessionSidebarModel.failedSessionSummary(in: homeRuns)
         return HStack(spacing: 0) {
             Button {
                 self.appModel.openChat(sessionKey: mainKey)
@@ -478,10 +480,24 @@ struct RootSidebar: View {
                     Image(systemName: "house")
                         .font(OpenClawType.subheadSemiBold)
                         .frame(width: 18)
-                    Text(String(localized: "Home"))
-                        .font(OpenClawType.subheadSemiBold)
-                        .lineLimit(1)
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(String(localized: "Home"))
+                            .font(OpenClawType.subheadSemiBold)
+                            .lineLimit(1)
+                        if let failedRun {
+                            Text(verbatim: failedRun)
+                                .font(OpenClawType.caption2Medium)
+                                .foregroundStyle(OpenClawSidebarPalette.muted)
+                                .lineLimit(1)
+                        }
+                    }
                     Spacer(minLength: 4)
+                    if failedRun != nil {
+                        Image(systemName: "exclamationmark.triangle.fill")
+                            .font(OpenClawType.caption2Medium)
+                            .foregroundStyle(OpenClawBrand.warn)
+                            .accessibilityLabel(String(localized: "Thread failed"))
+                    }
                     if homeSessions.contains(where: { $0.hasActiveRun == true || $0.hasActiveSubagentRun == true }) {
                         ProgressView()
                             .controlSize(.mini)
@@ -641,6 +657,11 @@ struct RootSidebar: View {
                             ProgressView()
                                 .controlSize(.mini)
                                 .tint(OpenClawSidebarPalette.accent)
+                        } else if node.badges.queuedCount > 0 {
+                            Image(systemName: "clock")
+                                .font(OpenClawType.captionSemiBold)
+                                .foregroundStyle(OpenClawSidebarPalette.muted)
+                                .accessibilityLabel(String(localized: "Queued"))
                         } else {
                             Image(systemName: "bubble.left")
                                 .font(OpenClawType.captionSemiBold)
@@ -658,14 +679,7 @@ struct RootSidebar: View {
                                 ? OpenClawSidebarPalette.accent
                                 : OpenClawSidebarPalette.textStrong)
                             .lineLimit(1)
-                        // Web-parity subtitle: the work line (repo/branch) names the
-                        // session; recency moves to the trailing metadata slot.
-                        // A collapsed child or folded run keeps its outcome visible
-                        // here instead of losing the row that used to carry it.
-                        if let subtitle = node.failedDescendantSummary ?? ChatSessionSidebarModel.subtitle(
-                            for: session,
-                            workSubtitle: ChatSessionSidebarModel.workSubtitle(for: session))
-                        {
+                        if let subtitle = Self.sessionSubtitle(for: node) {
                             Text(verbatim: subtitle)
                                 .font(OpenClawType.caption2Medium)
                                 .foregroundStyle(OpenClawSidebarPalette.muted)
@@ -916,6 +930,18 @@ extension RootSidebar {
         var id: String {
             self.node.id
         }
+    }
+
+    /// Web-parity subtitle: the work line (repo/branch) names the session; recency moves to
+    /// the trailing metadata slot. A collapsed child or folded run keeps its outcome here
+    /// instead of losing the row that used to carry it: a failure first, then queued work in
+    /// place of the work line.
+    static func sessionSubtitle(for node: ChatSessionSidebarModel.Node) -> String? {
+        node.failedDescendantSummary ?? ChatSessionSidebarModel.subtitle(
+            for: node.session,
+            workSubtitle: node.badges.queuedCount > 0
+                ? String(localized: "Waiting for a concurrency slot")
+                : ChatSessionSidebarModel.workSubtitle(for: node.session))
     }
 
     /// Like the Control UI sidebar, child sessions start collapsed unless one of them is open;
