@@ -14,7 +14,7 @@ permissions:
 
 env:
   BASE_SHA: ad293c2f3b6ec68421ae7e483adf539e42f06faf
-  HEAD_SHA: ed8461866a8692b090d9cecad782a8a3c53c105c
+  HEAD_SHA: 235fbf8ae0f4ff37e3665aecd67a4313179c3f15
   XCODE_APP: /Applications/Xcode_26.6.app
 
 jobs:
