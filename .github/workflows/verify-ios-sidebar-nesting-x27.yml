@@ -1,0 +1,100 @@
+# Temporary fork-only fallback for openclaw/openclaw#187077 while macos-26 arm64
+# capacity is constrained: same fixture and steps on the xcode-27 image.
+name: Verify iOS sidebar nesting (xcode-27)
+
+on:
+  push:
+    branches: [verify/ios-chat-list-nesting]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  BASE_SHA: ad293c2f3b6ec68421ae7e483adf539e42f06faf
+  HEAD_SHA: 34d59f2afdcc9c359a568b173419126a9e3a8810
+
+jobs:
+  ios:
+    strategy:
+      fail-fast: false
+      matrix:
+        variant: [base, head]
+    runs-on: xcode-27
+    timeout-minutes: 150
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ matrix.variant == 'base' && env.BASE_SHA || env.HEAD_SHA }}
+          fetch-depth: 1
+      - uses: actions/checkout@v4
+        with:
+          path: _verify
+          sparse-checkout: .github/verify
+      - name: Apply temporary fixture
+        run: |
+          git apply _verify/.github/verify/sidebar-fixture.patch
+          rm -rf _verify
+          git status --short
+      - name: Xcode
+        run: |
+          xcode-select -p
+          xcodebuild -version
+      - name: Tools
+        run: |
+          tools="$RUNNER_TEMP/swift-tools"
+          ./scripts/install-xcodegen.sh "$tools"
+          ./scripts/install-swift-tools.sh "$tools"
+          echo "$tools" >> "$GITHUB_PATH"
+          watch_toolchain="$(awk -F '"' '/^channel =/ { print $2; exit }' apps/shared/OpenClawWatchRTC/rust-toolchain.toml)"
+          rustup toolchain install "$watch_toolchain" --profile minimal --component rust-src
+      - name: Install JS deps and Apple assets
+        run: |
+          corepack enable
+          pnpm install --frozen-lockfile
+          node scripts/prepare-apple-mermaid.mjs
+      - name: Generate project
+        run: pnpm ios:gen
+      - name: Pick simulator
+        run: |
+          sim="$(xcrun simctl list devices available --json | jq -r '[.devices | to_entries[] | select(.key | test("iOS")) | .value[] | select(.name | startswith("iPhone"))] as $p | (($p | map(select(.name | test(" Pro$"))) | last) // ($p | last)) | .udid')"
+          test -n "$sim" && test "$sim" != null
+          xcrun simctl list devices available | grep "$sim"
+          echo "SIM=$sim" >> "$GITHUB_ENV"
+          xcrun simctl boot "$sim" || true
+          xcrun simctl bootstatus "$sim" -b
+      - name: Sidebar screenshots (UI test)
+        run: |
+          set -o pipefail
+          xcodebuild test \
+            -project apps/ios/OpenClaw.xcodeproj \
+            -scheme OpenClawUITests \
+            -destination "platform=iOS Simulator,id=$SIM" \
+            -only-testing:OpenClawUITests/OpenClawSnapshotUITests/testSidebarNestingEvidence \
+            -resultBundlePath "$RUNNER_TEMP/ui.xcresult" 2>&1 | tee "$RUNNER_TEMP/ui.log" | grep -E "error:|Test Case|Executed|\*\* TEST" | tail -80
+      - name: Focused unit tests
+        if: ${{ !cancelled() && matrix.variant == 'head' }}
+        run: |
+          set -o pipefail
+          xcodebuild test \
+            -project apps/ios/OpenClaw.xcodeproj \
+            -scheme OpenClaw \
+            -destination "platform=iOS Simulator,id=$SIM" \
+            -only-testing:OpenClawTests/RootTabsPresentationTests \
+            -only-testing:OpenClawTests/RootSidebarTypographyTests \
+            -only-testing:OpenClawTests/OpenClawTypographyTests \
+            -resultBundlePath "$RUNNER_TEMP/unit.xcresult" 2>&1 | tee "$RUNNER_TEMP/unit.log" | grep -E "error:|✘|✔ Suite|Test run|failed|passed after|\*\* TEST" | tail -120
+      - name: Export screenshots
+        if: always()
+        run: |
+          mkdir -p "$RUNNER_TEMP/out"
+          if [[ -d "$RUNNER_TEMP/ui.xcresult" ]]; then
+            xcrun xcresulttool export attachments --path "$RUNNER_TEMP/ui.xcresult" --output-path "$RUNNER_TEMP/out" || true
+          fi
+          cp "$RUNNER_TEMP"/*.log "$RUNNER_TEMP/out/" 2>/dev/null || true
+          ls -la "$RUNNER_TEMP/out"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: x27-ios-${{ matrix.variant }}
+          path: ${{ runner.temp }}/out
