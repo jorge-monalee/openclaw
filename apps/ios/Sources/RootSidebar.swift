@@ -467,6 +467,8 @@ struct RootSidebar: View {
         let isSelected = self.selectedDestination == .chat &&
             self.resolvedSelectedSessionKey.caseInsensitiveCompare(mainKey) == .orderedSame
         let mainSession = self.mainSessionEntry
+        // Runs Home started have no row of their own; their work and attention belong here.
+        let homeSessions = (mainSession.map { [$0] } ?? []) + self.homeRunSessions
         return HStack(spacing: 0) {
             Button {
                 self.appModel.openChat(sessionKey: mainKey)
@@ -480,11 +482,11 @@ struct RootSidebar: View {
                         .font(OpenClawType.subheadSemiBold)
                         .lineLimit(1)
                     Spacer(minLength: 4)
-                    if mainSession?.hasActiveRun == true {
+                    if homeSessions.contains(where: { $0.hasActiveRun == true || $0.hasActiveSubagentRun == true }) {
                         ProgressView()
                             .controlSize(.mini)
                             .tint(OpenClawSidebarPalette.accent)
-                    } else if mainSession?.unread == true {
+                    } else if homeSessions.contains(where: { $0.unread == true }) {
                         Circle()
                             .fill(OpenClawSidebarPalette.accent)
                             .frame(width: 7, height: 7)
@@ -504,8 +506,8 @@ struct RootSidebar: View {
             .overlay(alignment: .leading) {
                 OpenClawSessionColorStripe(color: mainSession?.color)
             }
-            .accessibilityValue(mainSession?.unread == true ? String(localized: "Unread") : "")
-            self.attentionBadges(for: mainSession.map { [$0] } ?? [], targetID: "home")
+            .accessibilityValue(homeSessions.contains { $0.unread == true } ? String(localized: "Unread") : "")
+            self.attentionBadges(for: homeSessions, targetID: "home")
         }
     }
 
@@ -539,6 +541,10 @@ struct RootSidebar: View {
     /// ("agent:<id>:main"), so raw comparison would drop Home's badges.
     private var mainSessionEntry: OpenClawChatSessionEntry? {
         self.model.sessions.first { $0.key == self.resolvedMainSessionKey }
+    }
+
+    private var homeRunSessions: [OpenClawChatSessionEntry] {
+        ChatSessionSidebarModel.foldedRuns(in: self.model.sessions, under: self.resolvedMainSessionKey)
     }
 
     private var resolvedMainSessionKey: String {
@@ -654,7 +660,9 @@ struct RootSidebar: View {
                             .lineLimit(1)
                         // Web-parity subtitle: the work line (repo/branch) names the
                         // session; recency moves to the trailing metadata slot.
-                        if let subtitle = ChatSessionSidebarModel.subtitle(
+                        // A collapsed child or folded run keeps its outcome visible
+                        // here instead of losing the row that used to carry it.
+                        if let subtitle = node.failedDescendantSummary ?? ChatSessionSidebarModel.subtitle(
                             for: session,
                             workSubtitle: ChatSessionSidebarModel.workSubtitle(for: session))
                         {
@@ -672,11 +680,17 @@ struct RootSidebar: View {
                             .foregroundStyle(OpenClawSidebarPalette.accent)
                             .accessibilityHidden(true)
                     }
+                    if node.badges.failedCount > 0 {
+                        Image(systemName: "exclamationmark.triangle.fill")
+                            .font(OpenClawType.caption2Medium)
+                            .foregroundStyle(OpenClawBrand.warn)
+                            .accessibilityLabel(String(localized: "Thread failed"))
+                    }
                     Text(verbatim: CommandCenterTab.sessionDetail(session))
                         .font(OpenClawType.caption2Medium)
                         .foregroundStyle(OpenClawSidebarPalette.muted)
                         .lineLimit(1)
-                    if session.unread == true {
+                    if node.badges.hasUnread {
                         Circle()
                             .fill(OpenClawSidebarPalette.accent)
                             .frame(width: 7, height: 7)
@@ -709,7 +723,7 @@ struct RootSidebar: View {
                 fork: { self.forkSession(session) })
             .accessibilityValue(Self.sessionAccessibilityValue(
                 isPinned: session.pinned == true,
-                isUnread: session.unread == true))
+                isUnread: node.badges.hasUnread))
             if !node.children.isEmpty {
                 self.childToggle(row)
             }

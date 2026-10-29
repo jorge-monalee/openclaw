@@ -201,10 +201,12 @@ Saved pins are preserved.
 
 Like the Control UI sidebar, the iOS sidebar nests child sessions under their
 parent. Tap the arrow beside a parent to show or hide its children; a parent
-opens automatically when one of its children is the current chat. Subagent runs
-do not get their own sidebar rows: their status counts toward the parent row, and
-any conversations they start appear in their place. The recent-session limit
-counts only top-level sessions.
+opens automatically when one of its children is the current chat. A chat you
+pinned or moved into a group stays in that section instead of following its
+parent into another one. Subagent runs do not get their own sidebar rows: their
+status counts toward the parent row, and any conversations they start appear in
+their place. Runs started from Home show their state on the Home row. The
+recent-session limit counts only top-level sessions.
 
 Long-press an eligible session and choose **Snooze**:
 **In 1 hour**, **In 3 hours**, **This evening** (18:00 local, only when more than
