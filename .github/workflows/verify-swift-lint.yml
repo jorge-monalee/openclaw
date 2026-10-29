@@ -10,7 +10,7 @@ permissions:
   contents: read
 
 env:
-  HEAD_SHA: 02c9be19ae23ed575d13a0975eb6bb4f135e02f7
+  HEAD_SHA: ed8461866a8692b090d9cecad782a8a3c53c105c
   XCODE_APP: /Applications/Xcode_26.6.app
 
 jobs:
@@ -53,3 +53,9 @@ jobs:
       - name: Lint (macos)
         if: ${{ !cancelled() }}
         run: ./scripts/lint-swift.sh macos
+      - name: Native i18n inventory
+        if: ${{ !cancelled() }}
+        run: |
+          corepack enable
+          pnpm install --frozen-lockfile
+          pnpm native:i18n:check

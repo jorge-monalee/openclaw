@@ -1,8 +1,8 @@
 diff --git a/apps/ios/Sources/Chat/AppleReviewDemoChatTransport.swift b/apps/ios/Sources/Chat/AppleReviewDemoChatTransport.swift
-index 0c8085b8455..d157ee3c94f 100644
+index 0c8085b8455..ffd26acd9ac 100644
 --- a/apps/ios/Sources/Chat/AppleReviewDemoChatTransport.swift
 +++ b/apps/ios/Sources/Chat/AppleReviewDemoChatTransport.swift
-@@ -404,6 +404,45 @@ struct LocalFixtureChatTransport: OpenClawChatTransport {
+@@ -404,6 +404,58 @@ struct LocalFixtureChatTransport: OpenClawChatTransport {
                  status: "running",
                  hasActiveRun: true))
          }
@@ -43,7 +43,20 @@ index 0c8085b8455..d157ee3c94f 100644
 +            oldPlan.archived = true
 +            var oldRun = row("agent:main:subagent:old-export", "Subagent: Old export", minutesAgo: 8)
 +            oldRun.spawnedBy = oldPlan.key
-+            sessions += [homeRun, release, notes, research, changelog, trip, oldPlan, oldRun]
++            // Runs that name their owner only through their own backrefs.
++            var digest = row("agent:main:subagent:digest", "Morning digest", minutesAgo: 9)
++            digest.spawnedBy = self.fixture.sessionKey
++            digest.status = "failed"
++            digest.unread = true
++            digest.lastRunError = "Digest timed out"
++            var booking = row("agent:main:subagent:booking", "Hotel booking", minutesAgo: 10)
++            booking.spawnedBy = trip.key
++            booking.status = "queued"
++            var summary = row("agent:main:subagent:summary", "Itinerary summary", minutesAgo: 11)
++            summary.spawnedBy = trip.key
++            summary.status = "done"
++            summary.unread = true
++            sessions += [homeRun, release, notes, research, changelog, trip, oldPlan, oldRun, digest, booking, summary]
 +        }
          if archived {
              sessions = []

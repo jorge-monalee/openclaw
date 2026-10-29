@@ -1,6 +1,7 @@
 # Temporary fork-only verification for openclaw/openclaw#187077.
-# Never part of the PR branch. Builds base and PR head with synthetic sidebar
-# fixture rows, captures drawer screenshots, and runs the focused tests.
+# Never part of the PR branch. Builds the prior PR head (base) and the review-fix
+# head with synthetic sidebar fixture rows, captures drawer screenshots, runs the
+# focused tests, and proves the new shared tests are red on the prior head.
 name: Verify iOS sidebar nesting
 
 on:
@@ -12,8 +13,8 @@ permissions:
   contents: read
 
 env:
-  BASE_SHA: dadf91220586be18e125d36739cd2bf02763b392
-  HEAD_SHA: 02c9be19ae23ed575d13a0975eb6bb4f135e02f7
+  BASE_SHA: ad293c2f3b6ec68421ae7e483adf539e42f06faf
+  HEAD_SHA: ed8461866a8692b090d9cecad782a8a3c53c105c
   XCODE_APP: /Applications/Xcode_26.6.app
 
 jobs:
@@ -40,11 +41,24 @@ jobs:
         run: |
           set -o pipefail
           swift test --filter 'ChatSessionSidebar|ChatCommandPalette' 2>&1 | tee "$RUNNER_TEMP/shared-tests.log" | tail -150
+      - name: New shared tests against the prior head's sources (expect red)
+        if: ${{ !cancelled() }}
+        run: |
+          git fetch --depth=1 origin "$BASE_SHA"
+          git checkout "$BASE_SHA" -- apps/shared/OpenClawKit/Sources
+          git status --short
+          cd apps/shared/OpenClawKit
+          if swift test --filter 'ChatSessionSidebarModelTests' > "$RUNNER_TEMP/shared-tests-prior-head.log" 2>&1; then
+            tail -60 "$RUNNER_TEMP/shared-tests-prior-head.log"
+            echo "::error::new tests passed on the prior head"
+            exit 1
+          fi
+          grep -E "✘|failed|error:" "$RUNNER_TEMP/shared-tests-prior-head.log" | head -60
       - uses: actions/upload-artifact@v4
         if: always()
         with:
           name: shared-swift-tests-log
-          path: ${{ runner.temp }}/shared-tests.log
+          path: ${{ runner.temp }}/shared-tests*.log
 
   ios:
     strategy:
@@ -62,12 +76,9 @@ jobs:
         with:
           path: _verify
           sparse-checkout: .github/verify
-      - name: Apply temporary fixture (and base-only regression test)
+      - name: Apply temporary fixture
         run: |
           git apply _verify/.github/verify/sidebar-fixture.patch
-          if [[ "${{ matrix.variant }}" == "base" ]]; then
-            git apply _verify/.github/verify/red-on-base.patch
-          fi
           rm -rf _verify
           git status --short
       - name: Select Xcode
@@ -107,7 +118,7 @@ jobs:
             -only-testing:OpenClawUITests/OpenClawSnapshotUITests/testSidebarNestingEvidence \
             -resultBundlePath "$RUNNER_TEMP/ui.xcresult" 2>&1 | tee "$RUNNER_TEMP/ui.log" | grep -E "error:|Test Case|Executed|\*\* TEST" | tail -80
       - name: Focused unit tests
-        if: ${{ !cancelled() }}
+        if: ${{ !cancelled() && matrix.variant == 'head' }}
         run: |
           set -o pipefail
           xcodebuild test \
