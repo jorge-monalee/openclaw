@@ -14,7 +14,7 @@ permissions:
 
 env:
   BASE_SHA: ad293c2f3b6ec68421ae7e483adf539e42f06faf
-  HEAD_SHA: 235fbf8ae0f4ff37e3665aecd67a4313179c3f15
+  HEAD_SHA: 34d59f2afdcc9c359a568b173419126a9e3a8810
   XCODE_APP: /Applications/Xcode_26.6.app
 
 jobs:
@@ -64,7 +64,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        variant: [base, head]
+        variant: [head]
     runs-on: macos-26
     timeout-minutes: 150
     steps:
