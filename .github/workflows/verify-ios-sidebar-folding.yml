@@ -1,4 +1,4 @@
-# Temporary fork-only verification for openclaw/openclaw#187077 (reduced folding layer).
+# Temporary fork-only verification for openclaw/openclaw#187077 (reduced folding layer, v2).
 # Never part of the PR branch. Runs shared Swift tests, format/lint/i18n checks and the
 # focused iOS tests on HEAD_SHA, and captures the drawer with a synthetic
 # parent -> subagent run -> child fixture on main (base) and on HEAD_SHA (head).
