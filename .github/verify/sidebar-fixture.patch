@@ -1,0 +1,85 @@
+diff --git a/apps/ios/Sources/Chat/AppleReviewDemoChatTransport.swift b/apps/ios/Sources/Chat/AppleReviewDemoChatTransport.swift
+index 4e282cdaf2f..104768197c0 100644
+--- a/apps/ios/Sources/Chat/AppleReviewDemoChatTransport.swift
++++ b/apps/ios/Sources/Chat/AppleReviewDemoChatTransport.swift
+@@ -420,6 +420,46 @@ struct LocalFixtureChatTransport: OpenClawChatTransport {
+                 status: "running",
+                 hasActiveRun: true))
+         }
++        if ProcessInfo.processInfo.arguments.contains("--openclaw-sidebar-folding-fixture") {
++            // Temporary PR-evidence fixture: a parent -> subagent run -> child chain, plus Home runs.
++            let now = Date().timeIntervalSince1970 * 1000
++            func row(_ key: String, _ label: String, minutesAgo: Double) -> OpenClawChatSessionEntry {
++                var row = OpenClawChatSessionEntry(key: key)
++                row.label = label
++                row.sessionId = key
++                row.updatedAt = now - minutesAgo * 60000
++                return row
++            }
++            var triage = row("agent:main:subagent:triage", "Inbox triage", minutesAgo: 1)
++            triage.spawnedBy = self.fixture.sessionKey
++            triage.status = "running"
++            triage.hasActiveRun = true
++            var digest = row("agent:main:subagent:digest", "Morning digest", minutesAgo: 2)
++            digest.spawnedBy = self.fixture.sessionKey
++            digest.status = "failed"
++            digest.unread = true
++            digest.lastRunError = "Digest timed out"
++            if let home = sessions.firstIndex(where: { $0.key == self.fixture.sessionKey }) {
++                sessions[home].childSessions = (sessions[home].childSessions ?? []) + [triage.key]
++            }
++            var release = row("agent:main:dashboard:release", "Release plan", minutesAgo: 3)
++            release.childSessions = ["agent:main:subagent:research"]
++            var research = row("agent:main:subagent:research", "Competitor research", minutesAgo: 4)
++            research.spawnedBy = release.key
++            research.status = "running"
++            research.hasActiveRun = true
++            research.unread = true
++            research.childSessions = ["agent:main:dashboard:findings"]
++            var findings = row("agent:main:dashboard:findings", "Findings summary", minutesAgo: 5)
++            findings.parentSessionKey = research.key
++            let trip = row("agent:main:dashboard:trip", "Trip planning", minutesAgo: 6)
++            var booking = row("agent:main:subagent:booking", "Hotel booking", minutesAgo: 7)
++            booking.spawnedBy = trip.key
++            booking.status = "failed"
++            booking.unread = true
++            booking.lastRunError = "Booking timed out"
++            sessions += [triage, digest, release, research, findings, trip, booking]
++        }
+         if ScreenshotFixtureMode.groupControlsEnabled { sessions += await DrawerGroupFixture.store.sessions() }
+         if archived {
+             sessions = []
+diff --git a/apps/ios/UITests/OpenClawSnapshotUITests.swift b/apps/ios/UITests/OpenClawSnapshotUITests.swift
+index b769fd2cdf2..22e9f28047a 100644
+--- a/apps/ios/UITests/OpenClawSnapshotUITests.swift
++++ b/apps/ios/UITests/OpenClawSnapshotUITests.swift
+@@ -44,6 +44,29 @@ final class OpenClawSnapshotUITests: XCTestCase {
+         try super.tearDownWithError()
+     }
+ 
++    func testSidebarFoldingEvidence() throws {
++        try XCTSkipIf(UIDevice.current.userInterfaceIdiom != .phone, "Phone sidebar only")
++        self.launchApp(for: Self.chatScreenshotTarget, additionalArguments: ["--openclaw-sidebar-folding-fixture"])
++        let app = try XCTUnwrap(self.app)
++        self.tapSidebarReveal(in: app)
++        let release = app.buttons.matching(NSPredicate(format: "label CONTAINS %@", "Release plan")).firstMatch
++        XCTAssertTrue(release.waitForExistence(timeout: 10))
++        Thread.sleep(forTimeInterval: 1.5)
++        // Screenshots come first so the main-branch run still records its before state.
++        self.attachScreenshot(named: "sidebar-folding-drawer")
++        let hasFindings = app.buttons.matching(NSPredicate(format: "label CONTAINS %@", "Findings summary"))
++            .firstMatch.exists
++        let runRows = ["Competitor research", "Hotel booking", "Inbox triage"].filter {
++            app.buttons.matching(NSPredicate(format: "label BEGINSWITH %@", $0)).firstMatch.exists
++        }
++        release.press(forDuration: 0.8)
++        let offersMarkAsRead = app.buttons["Mark as Read"].waitForExistence(timeout: 4)
++        self.attachScreenshot(named: "sidebar-folding-menu")
++        XCTAssertTrue(hasFindings, "The run's child chat should take the run's place")
++        XCTAssertEqual(runRows, [], "Subagent runs listed as rows")
++        XCTAssertTrue(offersMarkAsRead, "The parent menu should offer Mark as Read for its unread run")
++    }
++
+     func testDrawerGroupHeaderControls() throws {
+         self.launchApp(for: Self.chatScreenshotTarget, additionalArguments: ["--openclaw-group-controls-fixture"])
+         let app = try XCTUnwrap(self.app)

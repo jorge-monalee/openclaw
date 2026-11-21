@@ -1,0 +1,177 @@
+# Temporary fork-only verification for openclaw/openclaw#187077 (reduced folding layer).
+# Never part of the PR branch. Runs shared Swift tests, format/lint/i18n checks and the
+# focused iOS tests on HEAD_SHA, and captures the drawer with a synthetic
+# parent -> subagent run -> child fixture on main (base) and on HEAD_SHA (head).
+name: Verify iOS sidebar folding
+
+on:
+  push:
+    branches: [verify/ios-chat-list-nesting-v2]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  BASE_SHA: 6d1726a25bb0ca77533e76589d1409c79a91a3f6
+  HEAD_SHA: d53ea12f8d5a81c0a9ac6a5ffdafbbda2c20fa32
+
+jobs:
+  shared:
+    runs-on: xcode-27
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.HEAD_SHA }}
+          fetch-depth: 1
+      - name: Xcode
+        run: |
+          xcode-select -p
+          xcodebuild -version
+          swift --version
+      - name: Swift tools
+        run: |
+          tools="$RUNNER_TEMP/swift-tools"
+          ./scripts/install-swift-tools.sh "$tools"
+          echo "$tools" >> "$GITHUB_PATH"
+      - name: Format (ios)
+        run: ./scripts/format-swift.sh ios
+      - name: Show proposed format changes
+        if: ${{ failure() }}
+        run: |
+          set +e
+          (
+            cd apps/ios
+            swiftformat --config ../../config/swiftformat \
+              --unexclude "$PWD/Sources,$PWD/ShareExtension,$PWD/ActivityWidget,$PWD/WatchApp,$PWD/../shared/OpenClawKit/Sources/OpenClawChatUI,$PWD/../shared/OpenClawKit/Sources/OpenClawKit,$PWD/../shared/OpenClawKit/Sources/OpenClawNativeState,$PWD/../shared/OpenClawKit/Sources/OpenClawProtocol,$PWD/../swabble/Sources/SwabbleKit" \
+              --filelist SwiftSources.input.xcfilelist
+          )
+          git --no-pager diff | head -400
+          git checkout -- .
+      - name: Format (macos)
+        if: ${{ !cancelled() }}
+        run: ./scripts/format-swift.sh macos
+      - name: Lint (ios)
+        if: ${{ !cancelled() }}
+        run: ./scripts/lint-swift.sh ios
+      - name: Lint (macos)
+        if: ${{ !cancelled() }}
+        run: ./scripts/lint-swift.sh macos
+      - name: JS deps and Apple assets
+        if: ${{ !cancelled() }}
+        run: |
+          corepack enable
+          pnpm install --frozen-lockfile
+          node scripts/prepare-apple-mermaid.mjs
+      - name: Native i18n inventory
+        if: ${{ !cancelled() }}
+        run: pnpm native:i18n:verify
+      - name: Changed non-Swift files format
+        if: ${{ !cancelled() }}
+        run: node scripts/run-format.mts --check --no-error-on-unmatched-pattern -- docs/platforms/ios.md apps/.i18n/native-source.json
+      - name: Shared sidebar and palette tests
+        if: ${{ !cancelled() }}
+        working-directory: apps/shared/OpenClawKit
+        run: |
+          set -o pipefail
+          swift test --filter 'ChatSessionSidebar|ChatCommandPalette' 2>&1 | tee "$RUNNER_TEMP/shared-tests.log" | grep -E "error:|✘|✔ Suite ChatSessionSidebarModelTests|Test run|failed|passed after|fold|ancestor|Mark as read|mark as read" | tail -150
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: shared-tests-log
+          path: ${{ runner.temp }}/shared-tests.log
+
+  ios:
+    strategy:
+      fail-fast: false
+      matrix:
+        variant: [base, head]
+    runs-on: xcode-27
+    timeout-minutes: 150
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ matrix.variant == 'base' && env.BASE_SHA || env.HEAD_SHA }}
+          fetch-depth: 1
+      - uses: actions/checkout@v4
+        with:
+          path: _verify
+          sparse-checkout: .github/verify
+      - name: Apply temporary fixture
+        run: |
+          git apply _verify/.github/verify/sidebar-fixture.patch
+          rm -rf _verify
+          git status --short
+      - name: Xcode
+        run: |
+          xcode-select -p
+          xcodebuild -version
+      - name: Tools
+        run: |
+          tools="$RUNNER_TEMP/swift-tools"
+          ./scripts/install-xcodegen.sh "$tools"
+          ./scripts/install-swift-tools.sh "$tools"
+          echo "$tools" >> "$GITHUB_PATH"
+          watch_toolchain="$(awk -F '"' '/^channel =/ { print $2; exit }' apps/shared/OpenClawWatchRTC/rust-toolchain.toml)"
+          rustup toolchain install "$watch_toolchain" --profile minimal --component rust-src
+      - name: Install JS deps and Apple assets
+        run: |
+          corepack enable
+          pnpm install --frozen-lockfile
+          node scripts/prepare-apple-mermaid.mjs
+      - name: Generate project
+        run: pnpm ios:gen
+      - name: Pick simulator
+        run: |
+          sim="$(xcrun simctl list devices available --json | jq -r '[.devices | to_entries[] | select(.key | test("iOS")) | .value[] | select(.name | startswith("iPhone"))] as $p | (($p | map(select(.name | test(" Pro$"))) | last) // ($p | last)) | .udid')"
+          test -n "$sim" && test "$sim" != null
+          xcrun simctl list devices available | grep "$sim"
+          echo "SIM=$sim" >> "$GITHUB_ENV"
+          xcrun simctl boot "$sim" || true
+          xcrun simctl bootstatus "$sim" -b
+      - name: Sidebar screenshots (UI test)
+        # main still lists runs as rows, so the base capture is the before state.
+        continue-on-error: ${{ matrix.variant == 'base' }}
+        run: |
+          set -o pipefail
+          xcodebuild test \
+            -project apps/ios/OpenClaw.xcodeproj \
+            -scheme OpenClawUITests \
+            -destination "platform=iOS Simulator,id=$SIM" \
+            -only-testing:OpenClawUITests/OpenClawSnapshotUITests/testSidebarFoldingEvidence \
+            -resultBundlePath "$RUNNER_TEMP/ui.xcresult" 2>&1 | tee "$RUNNER_TEMP/ui.log" | grep -E "error:|XCTAssert|Test Case|Executed|\*\* TEST" | tail -80
+      - name: Focused unit tests
+        if: ${{ !cancelled() && matrix.variant == 'head' }}
+        run: |
+          set -o pipefail
+          xcodebuild test \
+            -project apps/ios/OpenClaw.xcodeproj \
+            -scheme OpenClaw \
+            -destination "platform=iOS Simulator,id=$SIM" \
+            -only-testing:OpenClawTests/RootTabsPresentationTests \
+            -only-testing:OpenClawTests/RootTabsSourceGuardTests \
+            -only-testing:OpenClawTests/RootSidebarEqualityTests \
+            -only-testing:OpenClawTests/RootSidebarModelSessionEventsTests \
+            -only-testing:OpenClawTests/RootSidebarPerformanceTests \
+            -only-testing:OpenClawTests/RootSidebarRosterLoadingTests \
+            -only-testing:OpenClawTests/RootSidebarShellContinuityTests \
+            -only-testing:OpenClawTests/RootSidebarShellInvalidationTests \
+            -only-testing:OpenClawTests/RootSidebarStabilityTests \
+            -only-testing:OpenClawTests/CommandCenterTabSessionFilterTests \
+            -only-testing:OpenClawTests/OpenClawTypographyTests \
+            -resultBundlePath "$RUNNER_TEMP/unit.xcresult" 2>&1 | tee "$RUNNER_TEMP/unit.log" | grep -E "error:|✘|✔ Suite|Test run|failed|passed after|\*\* TEST" | tail -120
+      - name: Export screenshots
+        if: always()
+        run: |
+          mkdir -p "$RUNNER_TEMP/out"
+          if [[ -d "$RUNNER_TEMP/ui.xcresult" ]]; then
+            xcrun xcresulttool export attachments --path "$RUNNER_TEMP/ui.xcresult" --output-path "$RUNNER_TEMP/out" || true
+          fi
+          cp "$RUNNER_TEMP"/*.log "$RUNNER_TEMP/out/" 2>/dev/null || true
+          ls -la "$RUNNER_TEMP/out"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: ios-${{ matrix.variant }}
+          path: ${{ runner.temp }}/out
