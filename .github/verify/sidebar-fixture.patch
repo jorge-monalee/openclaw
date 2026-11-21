@@ -1,13 +1,13 @@
 diff --git a/apps/ios/Sources/Chat/AppleReviewDemoChatTransport.swift b/apps/ios/Sources/Chat/AppleReviewDemoChatTransport.swift
-index 0c8085b8455..ffd26acd9ac 100644
+index 4e282cdaf2f..104768197c0 100644
 --- a/apps/ios/Sources/Chat/AppleReviewDemoChatTransport.swift
 +++ b/apps/ios/Sources/Chat/AppleReviewDemoChatTransport.swift
-@@ -404,6 +404,58 @@ struct LocalFixtureChatTransport: OpenClawChatTransport {
+@@ -420,6 +420,46 @@ struct LocalFixtureChatTransport: OpenClawChatTransport {
                  status: "running",
                  hasActiveRun: true))
          }
-+        if ProcessInfo.processInfo.arguments.contains("--openclaw-sidebar-nesting-fixture") {
-+            // Temporary PR-evidence fixture: synthetic parent, child, subagent, and archived rows.
++        if ProcessInfo.processInfo.arguments.contains("--openclaw-sidebar-folding-fixture") {
++            // Temporary PR-evidence fixture: a parent -> subagent run -> child chain, plus Home runs.
 +            let now = Date().timeIntervalSince1970 * 1000
 +            func row(_ key: String, _ label: String, minutesAgo: Double) -> OpenClawChatSessionEntry {
 +                var row = OpenClawChatSessionEntry(key: key)
@@ -16,81 +16,70 @@ index 0c8085b8455..ffd26acd9ac 100644
 +                row.updatedAt = now - minutesAgo * 60000
 +                return row
 +            }
-+            var homeRun = row("agent:main:subagent:triage", "Inbox triage", minutesAgo: 1)
-+            homeRun.spawnedBy = self.fixture.sessionKey
-+            homeRun.status = "running"
-+            homeRun.hasActiveRun = true
-+            if let home = sessions.firstIndex(where: { $0.key == self.fixture.sessionKey }) {
-+                sessions[home].childSessions = (sessions[home].childSessions ?? []) + [homeRun.key]
-+            }
-+            var release = row("agent:main:dashboard:release", "Release plan", minutesAgo: 2)
-+            release.childSessions = [
-+                "agent:main:subagent:notes", "agent:main:subagent:research", "agent:main:dashboard:changelog",
-+            ]
-+            var notes = row("agent:main:subagent:notes", "Subagent: Collect release notes", minutesAgo: 3)
-+            notes.spawnedBy = release.key
-+            notes.status = "running"
-+            notes.hasActiveRun = true
-+            var research = row("agent:main:subagent:research", "Competitor research", minutesAgo: 4)
-+            research.spawnedBy = release.key
-+            research.status = "failed"
-+            research.unread = true
-+            research.lastRunError = "Competitor research timed out"
-+            var changelog = row("agent:main:dashboard:changelog", "Changelog draft", minutesAgo: 5)
-+            changelog.parentSessionKey = release.key
-+            let trip = row("agent:main:dashboard:trip", "Trip planning", minutesAgo: 6)
-+            var oldPlan = row("agent:main:dashboard:old-plan", "Archived: Q3 plan", minutesAgo: 7)
-+            oldPlan.archived = true
-+            var oldRun = row("agent:main:subagent:old-export", "Subagent: Old export", minutesAgo: 8)
-+            oldRun.spawnedBy = oldPlan.key
-+            // Runs that name their owner only through their own backrefs.
-+            var digest = row("agent:main:subagent:digest", "Morning digest", minutesAgo: 9)
++            var triage = row("agent:main:subagent:triage", "Inbox triage", minutesAgo: 1)
++            triage.spawnedBy = self.fixture.sessionKey
++            triage.status = "running"
++            triage.hasActiveRun = true
++            var digest = row("agent:main:subagent:digest", "Morning digest", minutesAgo: 2)
 +            digest.spawnedBy = self.fixture.sessionKey
 +            digest.status = "failed"
 +            digest.unread = true
 +            digest.lastRunError = "Digest timed out"
-+            var booking = row("agent:main:subagent:booking", "Hotel booking", minutesAgo: 10)
++            if let home = sessions.firstIndex(where: { $0.key == self.fixture.sessionKey }) {
++                sessions[home].childSessions = (sessions[home].childSessions ?? []) + [triage.key]
++            }
++            var release = row("agent:main:dashboard:release", "Release plan", minutesAgo: 3)
++            release.childSessions = ["agent:main:subagent:research"]
++            var research = row("agent:main:subagent:research", "Competitor research", minutesAgo: 4)
++            research.spawnedBy = release.key
++            research.status = "running"
++            research.hasActiveRun = true
++            research.unread = true
++            research.childSessions = ["agent:main:dashboard:findings"]
++            var findings = row("agent:main:dashboard:findings", "Findings summary", minutesAgo: 5)
++            findings.parentSessionKey = research.key
++            let trip = row("agent:main:dashboard:trip", "Trip planning", minutesAgo: 6)
++            var booking = row("agent:main:subagent:booking", "Hotel booking", minutesAgo: 7)
 +            booking.spawnedBy = trip.key
-+            booking.status = "queued"
-+            var summary = row("agent:main:subagent:summary", "Itinerary summary", minutesAgo: 11)
-+            summary.spawnedBy = trip.key
-+            summary.status = "done"
-+            summary.unread = true
-+            sessions += [homeRun, release, notes, research, changelog, trip, oldPlan, oldRun, digest, booking, summary]
++            booking.status = "failed"
++            booking.unread = true
++            booking.lastRunError = "Booking timed out"
++            sessions += [triage, digest, release, research, findings, trip, booking]
 +        }
+         if ScreenshotFixtureMode.groupControlsEnabled { sessions += await DrawerGroupFixture.store.sessions() }
          if archived {
              sessions = []
-         }
 diff --git a/apps/ios/UITests/OpenClawSnapshotUITests.swift b/apps/ios/UITests/OpenClawSnapshotUITests.swift
-index 76618c62e6b..cd35b1d0e05 100644
+index b769fd2cdf2..22e9f28047a 100644
 --- a/apps/ios/UITests/OpenClawSnapshotUITests.swift
 +++ b/apps/ios/UITests/OpenClawSnapshotUITests.swift
-@@ -186,6 +186,28 @@ final class OpenClawSnapshotUITests: XCTestCase {
-         XCTAssertTrue(waiting.waitForNonExistence(timeout: 5))
+@@ -44,6 +44,29 @@ final class OpenClawSnapshotUITests: XCTestCase {
+         try super.tearDownWithError()
      }
  
-+    func testSidebarNestingEvidence() throws {
++    func testSidebarFoldingEvidence() throws {
 +        try XCTSkipIf(UIDevice.current.userInterfaceIdiom != .phone, "Phone sidebar only")
-+        self.launchApp(
-+            for: ScreenshotTarget(initialTab: "chat", initialDestination: "chat", name: "sidebar-nesting"),
-+            additionalArguments: ["--openclaw-sidebar-nesting-fixture"])
++        self.launchApp(for: Self.chatScreenshotTarget, additionalArguments: ["--openclaw-sidebar-folding-fixture"])
 +        let app = try XCTUnwrap(self.app)
-+        let showSidebar = app.buttons["RootTabs.Sidebar.Show"]
-+        XCTAssertTrue(showSidebar.waitForExistence(timeout: 8))
-+        showSidebar.tap()
-+        let trip = app.descendants(matching: .any)
-+            .matching(NSPredicate(format: "label CONTAINS %@", "Trip planning")).firstMatch
-+        XCTAssertTrue(trip.waitForExistence(timeout: 10))
++        self.tapSidebarReveal(in: app)
++        let release = app.buttons.matching(NSPredicate(format: "label CONTAINS %@", "Release plan")).firstMatch
++        XCTAssertTrue(release.waitForExistence(timeout: 10))
 +        Thread.sleep(forTimeInterval: 1.5)
-+        self.attachScreenshot(named: "sidebar-nesting-default")
-+        let expand = app.buttons["Expand child sessions"].firstMatch
-+        if expand.waitForExistence(timeout: 2) {
-+            expand.tap()
-+            Thread.sleep(forTimeInterval: 1.5)
-+            self.attachScreenshot(named: "sidebar-nesting-expanded")
++        // Screenshots come first so the main-branch run still records its before state.
++        self.attachScreenshot(named: "sidebar-folding-drawer")
++        let hasFindings = app.buttons.matching(NSPredicate(format: "label CONTAINS %@", "Findings summary"))
++            .firstMatch.exists
++        let runRows = ["Competitor research", "Hotel booking", "Inbox triage"].filter {
++            app.buttons.matching(NSPredicate(format: "label BEGINSWITH %@", $0)).firstMatch.exists
 +        }
++        release.press(forDuration: 0.8)
++        let offersMarkAsRead = app.buttons["Mark as Read"].waitForExistence(timeout: 4)
++        self.attachScreenshot(named: "sidebar-folding-menu")
++        XCTAssertTrue(hasFindings, "The run's child chat should take the run's place")
++        XCTAssertEqual(runRows, [], "Subagent runs listed as rows")
++        XCTAssertTrue(offersMarkAsRead, "The parent menu should offer Mark as Read for its unread run")
 +    }
 +
-     func testFinishedTurnShowsWaitingHelperAndOpensItsSession() throws {
-         self.launchApp(
-             for: Self.chatScreenshotTarget,
+     func testDrawerGroupHeaderControls() throws {
+         self.launchApp(for: Self.chatScreenshotTarget, additionalArguments: ["--openclaw-group-controls-fixture"])
+         let app = try XCTUnwrap(self.app)

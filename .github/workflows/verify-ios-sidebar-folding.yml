@@ -1,8 +1,8 @@
-# Temporary fork-only verification for openclaw/openclaw#187077.
-# Never part of the PR branch. Builds the prior PR head (base) and the review-fix
-# head with synthetic sidebar fixture rows, captures drawer screenshots, runs the
-# focused tests, and proves the new shared tests are red on the prior head.
-name: Verify iOS sidebar nesting
+# Temporary fork-only verification for openclaw/openclaw#187077 (reduced folding layer, v2).
+# Never part of the PR branch. Runs shared Swift tests, format/lint/i18n checks and the
+# focused iOS tests on HEAD_SHA, and captures the drawer with a synthetic
+# parent -> subagent run -> child fixture on main (base) and on HEAD_SHA (head).
+name: Verify iOS sidebar folding
 
 on:
   push:
@@ -13,59 +13,81 @@ permissions:
   contents: read
 
 env:
-  BASE_SHA: ad293c2f3b6ec68421ae7e483adf539e42f06faf
-  HEAD_SHA: 34d59f2afdcc9c359a568b173419126a9e3a8810
-  XCODE_APP: /Applications/Xcode_26.6.app
+  BASE_SHA: 6d1726a25bb0ca77533e76589d1409c79a91a3f6
+  HEAD_SHA: d53ea12f8d5a81c0a9ac6a5ffdafbbda2c20fa32
 
 jobs:
-  shared-swift-tests:
-    runs-on: macos-26
-    timeout-minutes: 60
+  shared:
+    runs-on: xcode-27
+    timeout-minutes: 90
     steps:
       - uses: actions/checkout@v4
         with:
           ref: ${{ env.HEAD_SHA }}
           fetch-depth: 1
-      - name: Select Xcode
+      - name: Xcode
         run: |
-          sudo xcode-select -s "$XCODE_APP"
+          xcode-select -p
           xcodebuild -version
           swift --version
-      - name: Native asset dependencies
+      - name: Swift tools
+        run: |
+          tools="$RUNNER_TEMP/swift-tools"
+          ./scripts/install-swift-tools.sh "$tools"
+          echo "$tools" >> "$GITHUB_PATH"
+      - name: Format (ios)
+        run: ./scripts/format-swift.sh ios
+      - name: Show proposed format changes
+        if: ${{ failure() }}
+        run: |
+          set +e
+          (
+            cd apps/ios
+            swiftformat --config ../../config/swiftformat \
+              --unexclude "$PWD/Sources,$PWD/ShareExtension,$PWD/ActivityWidget,$PWD/WatchApp,$PWD/../shared/OpenClawKit/Sources/OpenClawChatUI,$PWD/../shared/OpenClawKit/Sources/OpenClawKit,$PWD/../shared/OpenClawKit/Sources/OpenClawNativeState,$PWD/../shared/OpenClawKit/Sources/OpenClawProtocol,$PWD/../swabble/Sources/SwabbleKit" \
+              --filelist SwiftSources.input.xcfilelist
+          )
+          git --no-pager diff | head -400
+          git checkout -- .
+      - name: Format (macos)
+        if: ${{ !cancelled() }}
+        run: ./scripts/format-swift.sh macos
+      - name: Lint (ios)
+        if: ${{ !cancelled() }}
+        run: ./scripts/lint-swift.sh ios
+      - name: Lint (macos)
+        if: ${{ !cancelled() }}
+        run: ./scripts/lint-swift.sh macos
+      - name: JS deps and Apple assets
+        if: ${{ !cancelled() }}
         run: |
           corepack enable
           pnpm install --frozen-lockfile
           node scripts/prepare-apple-mermaid.mjs
+      - name: Native i18n inventory
+        if: ${{ !cancelled() }}
+        run: pnpm native:i18n:verify
+      - name: Changed non-Swift files format
+        if: ${{ !cancelled() }}
+        run: node scripts/run-format.mts --check --no-error-on-unmatched-pattern -- docs/platforms/ios.md apps/.i18n/native-source.json
       - name: Shared sidebar and palette tests
+        if: ${{ !cancelled() }}
         working-directory: apps/shared/OpenClawKit
         run: |
           set -o pipefail
-          swift test --filter 'ChatSessionSidebar|ChatCommandPalette' 2>&1 | tee "$RUNNER_TEMP/shared-tests.log" | tail -150
-      - name: New shared tests against the prior head's sources (expect red)
-        if: ${{ !cancelled() }}
-        run: |
-          git fetch --depth=1 origin "$BASE_SHA"
-          git checkout "$BASE_SHA" -- apps/shared/OpenClawKit/Sources
-          git status --short
-          cd apps/shared/OpenClawKit
-          if swift test --filter 'ChatSessionSidebarModelTests' > "$RUNNER_TEMP/shared-tests-prior-head.log" 2>&1; then
-            tail -60 "$RUNNER_TEMP/shared-tests-prior-head.log"
-            echo "::error::new tests passed on the prior head"
-            exit 1
-          fi
-          grep -E "✘|failed|error:" "$RUNNER_TEMP/shared-tests-prior-head.log" | head -60
+          swift test --filter 'ChatSessionSidebar|ChatCommandPalette' 2>&1 | tee "$RUNNER_TEMP/shared-tests.log" | grep -E "error:|✘|✔ Suite ChatSessionSidebarModelTests|Test run|failed|passed after|fold|ancestor|Mark as read|mark as read" | tail -150
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: shared-swift-tests-log
-          path: ${{ runner.temp }}/shared-tests*.log
+          name: shared-tests-log
+          path: ${{ runner.temp }}/shared-tests.log
 
   ios:
     strategy:
       fail-fast: false
       matrix:
-        variant: [head]
-    runs-on: macos-26
+        variant: [base, head]
+    runs-on: xcode-27
     timeout-minutes: 150
     steps:
       - uses: actions/checkout@v4
@@ -81,9 +103,9 @@ jobs:
           git apply _verify/.github/verify/sidebar-fixture.patch
           rm -rf _verify
           git status --short
-      - name: Select Xcode
+      - name: Xcode
         run: |
-          sudo xcode-select -s "$XCODE_APP"
+          xcode-select -p
           xcodebuild -version
       - name: Tools
         run: |
@@ -109,14 +131,16 @@ jobs:
           xcrun simctl boot "$sim" || true
           xcrun simctl bootstatus "$sim" -b
       - name: Sidebar screenshots (UI test)
+        # main still lists runs as rows, so the base capture is the before state.
+        continue-on-error: ${{ matrix.variant == 'base' }}
         run: |
           set -o pipefail
           xcodebuild test \
             -project apps/ios/OpenClaw.xcodeproj \
             -scheme OpenClawUITests \
             -destination "platform=iOS Simulator,id=$SIM" \
-            -only-testing:OpenClawUITests/OpenClawSnapshotUITests/testSidebarNestingEvidence \
-            -resultBundlePath "$RUNNER_TEMP/ui.xcresult" 2>&1 | tee "$RUNNER_TEMP/ui.log" | grep -E "error:|Test Case|Executed|\*\* TEST" | tail -80
+            -only-testing:OpenClawUITests/OpenClawSnapshotUITests/testSidebarFoldingEvidence \
+            -resultBundlePath "$RUNNER_TEMP/ui.xcresult" 2>&1 | tee "$RUNNER_TEMP/ui.log" | grep -E "error:|XCTAssert|Test Case|Executed|\*\* TEST" | tail -80
       - name: Focused unit tests
         if: ${{ !cancelled() && matrix.variant == 'head' }}
         run: |
@@ -126,7 +150,15 @@ jobs:
             -scheme OpenClaw \
             -destination "platform=iOS Simulator,id=$SIM" \
             -only-testing:OpenClawTests/RootTabsPresentationTests \
-            -only-testing:OpenClawTests/RootSidebarTypographyTests \
+            -only-testing:OpenClawTests/RootTabsSourceGuardTests \
+            -only-testing:OpenClawTests/RootSidebarEqualityTests \
+            -only-testing:OpenClawTests/RootSidebarModelSessionEventsTests \
+            -only-testing:OpenClawTests/RootSidebarPerformanceTests \
+            -only-testing:OpenClawTests/RootSidebarRosterLoadingTests \
+            -only-testing:OpenClawTests/RootSidebarShellContinuityTests \
+            -only-testing:OpenClawTests/RootSidebarShellInvalidationTests \
+            -only-testing:OpenClawTests/RootSidebarStabilityTests \
+            -only-testing:OpenClawTests/CommandCenterTabSessionFilterTests \
             -only-testing:OpenClawTests/OpenClawTypographyTests \
             -resultBundlePath "$RUNNER_TEMP/unit.xcresult" 2>&1 | tee "$RUNNER_TEMP/unit.log" | grep -E "error:|✘|✔ Suite|Test run|failed|passed after|\*\* TEST" | tail -120
       - name: Export screenshots
