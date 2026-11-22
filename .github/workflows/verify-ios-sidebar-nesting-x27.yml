@@ -14,7 +14,7 @@ permissions:
 
 env:
   BASE_SHA: 6d1726a25bb0ca77533e76589d1409c79a91a3f6
-  HEAD_SHA: d53ea12f8d5a81c0a9ac6a5ffdafbbda2c20fa32
+  HEAD_SHA: 3053676c1ee4459ee9ba5fe362a171998fe0e1c6
 
 jobs:
   shared:
