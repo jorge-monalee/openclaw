@@ -140,6 +140,7 @@ jobs:
             -scheme OpenClawUITests \
             -destination "platform=iOS Simulator,id=$SIM" \
             -only-testing:OpenClawUITests/OpenClawSnapshotUITests/testSidebarFoldingEvidence \
+            -only-testing:OpenClawUITests/OpenClawSnapshotUITests/testSidebarReadEvidence \
             -resultBundlePath "$RUNNER_TEMP/ui.xcresult" 2>&1 | tee "$RUNNER_TEMP/ui.log" | grep -E "error:|XCTAssert|Test Case|Executed|\*\* TEST" | tail -80
       - name: Focused unit tests
         if: ${{ !cancelled() && matrix.variant == 'head' }}

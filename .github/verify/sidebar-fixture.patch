@@ -1,8 +1,32 @@
 diff --git a/apps/ios/Sources/Chat/AppleReviewDemoChatTransport.swift b/apps/ios/Sources/Chat/AppleReviewDemoChatTransport.swift
-index 4e282cdaf2f..104768197c0 100644
+index 4e282cdaf2f..c5f602dd656 100644
 --- a/apps/ios/Sources/Chat/AppleReviewDemoChatTransport.swift
 +++ b/apps/ios/Sources/Chat/AppleReviewDemoChatTransport.swift
-@@ -420,6 +420,46 @@ struct LocalFixtureChatTransport: OpenClawChatTransport {
+@@ -402,6 +402,23 @@ struct LocalFixtureChatTransport: OpenClawChatTransport {
+         await self.store.abortRun(sessionKey: sessionKey, runId: runId)
+     }
+ 
++    func patchSession(
++        key: String,
++        expectedSessionID _: String?,
++        label _: String??,
++        category _: String??,
++        color _: String??,
++        pinned _: Bool?,
++        archived _: Bool?,
++        unread: Bool?) async throws
++    {
++        // Temporary PR-evidence fixture: remember Mark as Read so the next roster reflects it.
++        guard ProcessInfo.processInfo.arguments.contains("--openclaw-sidebar-read-fixture") else {
++            throw URLError(.unsupportedURL)
++        }
++        if unread == false { await SidebarFoldingFixtureReads.store.insert(key) }
++    }
++
+     func listSessions(
+         limit _: Int?,
+         search: String?,
+@@ -420,6 +437,65 @@ struct LocalFixtureChatTransport: OpenClawChatTransport {
                  status: "running",
                  hasActiveRun: true))
          }
@@ -16,10 +40,12 @@ index 4e282cdaf2f..104768197c0 100644
 +                row.updatedAt = now - minutesAgo * 60000
 +                return row
 +            }
++            let readProof = ProcessInfo.processInfo.arguments.contains("--openclaw-sidebar-read-fixture")
 +            var triage = row("agent:main:subagent:triage", "Inbox triage", minutesAgo: 1)
 +            triage.spawnedBy = self.fixture.sessionKey
-+            triage.status = "running"
-+            triage.hasActiveRun = true
++            // The read proof keeps Home idle so its unread dot is not hidden behind a spinner.
++            triage.status = readProof ? nil : "running"
++            triage.hasActiveRun = readProof ? nil : true
 +            var digest = row("agent:main:subagent:digest", "Morning digest", minutesAgo: 2)
 +            digest.spawnedBy = self.fixture.sessionKey
 +            digest.status = "failed"
@@ -45,15 +71,49 @@ index 4e282cdaf2f..104768197c0 100644
 +            booking.unread = true
 +            booking.lastRunError = "Booking timed out"
 +            sessions += [triage, digest, release, research, findings, trip, booking]
++            if readProof {
++                // A grandparent -> parent -> completed unread run chain, the run named only by spawnedBy.
++                var launch = row("agent:main:dashboard:launch", "Launch prep", minutesAgo: 8)
++                launch.childSessions = ["agent:main:dashboard:launch-copy"]
++                var copy = row("agent:main:dashboard:launch-copy", "Launch copy", minutesAgo: 9)
++                copy.parentSessionKey = launch.key
++                var review = row("agent:main:subagent:copy-review", "Copy review", minutesAgo: 10)
++                review.spawnedBy = copy.key
++                review.unread = true
++                sessions += [launch, copy, review]
++                let read = await SidebarFoldingFixtureReads.store.all()
++                // Like sessions.patch, a read also acknowledges the run's failure (lastReadAt).
++                for index in sessions.indices where read.contains(sessions[index].key) {
++                    sessions[index].unread = false
++                    sessions[index].lastReadAt = now
++                }
++            }
 +        }
          if ScreenshotFixtureMode.groupControlsEnabled { sessions += await DrawerGroupFixture.store.sessions() }
          if archived {
              sessions = []
+@@ -1517,3 +1593,16 @@ actor DrawerGroupFixtureStore {
+         ])
+     }
+ }
++
++actor SidebarFoldingFixtureReads {
++    static let store = SidebarFoldingFixtureReads()
++    private var keys: Set<String> = []
++
++    func insert(_ key: String) {
++        self.keys.insert(key)
++    }
++
++    func all() -> Set<String> {
++        self.keys
++    }
++}
 diff --git a/apps/ios/UITests/OpenClawSnapshotUITests.swift b/apps/ios/UITests/OpenClawSnapshotUITests.swift
-index b769fd2cdf2..22e9f28047a 100644
+index b769fd2cdf2..fb9f1eb3817 100644
 --- a/apps/ios/UITests/OpenClawSnapshotUITests.swift
 +++ b/apps/ios/UITests/OpenClawSnapshotUITests.swift
-@@ -44,6 +44,29 @@ final class OpenClawSnapshotUITests: XCTestCase {
+@@ -44,6 +44,71 @@ final class OpenClawSnapshotUITests: XCTestCase {
          try super.tearDownWithError()
      }
  
@@ -78,6 +138,48 @@ index b769fd2cdf2..22e9f28047a 100644
 +        XCTAssertTrue(hasFindings, "The run's child chat should take the run's place")
 +        XCTAssertEqual(runRows, [], "Subagent runs listed as rows")
 +        XCTAssertTrue(offersMarkAsRead, "The parent menu should offer Mark as Read for its unread run")
++    }
++
++    func testSidebarReadEvidence() throws {
++        try XCTSkipIf(UIDevice.current.userInterfaceIdiom != .phone, "Phone sidebar only")
++        self.launchApp(for: Self.chatScreenshotTarget, additionalArguments: [
++            "--openclaw-sidebar-folding-fixture",
++            "--openclaw-sidebar-read-fixture",
++        ])
++        let app = try XCTUnwrap(self.app)
++        self.tapSidebarReveal(in: app)
++        func row(_ title: String) -> XCUIElement {
++            app.buttons.matching(NSPredicate(format: "label CONTAINS %@", title)).firstMatch
++        }
++        let launch = row("Launch prep")
++        XCTAssertTrue(launch.waitForExistence(timeout: 10))
++        XCTAssertTrue(row("Launch copy").waitForExistence(timeout: 5))
++        XCTAssertFalse(row("Copy review").exists, "The completed run should fold into Launch copy")
++        // Collapse Launch prep with the chevron on its own row.
++        let chevrons = app.buttons.matching(NSPredicate(format: "label == %@", "Hide Sub-sessions"))
++            .allElementsBoundByIndex
++        let chevron = try XCTUnwrap(chevrons.min { abs($0.frame.midY - launch.frame.midY) <
++                abs($1.frame.midY - launch.frame.midY) })
++        chevron.tap()
++        XCTAssertTrue(row("Launch copy").waitForNonExistence(timeout: 5))
++        Thread.sleep(forTimeInterval: 1)
++        self.attachScreenshot(named: "sidebar-collapsed-unread")
++        XCTAssertTrue((launch.value as? String ?? "").contains("Unread"), "Collapsed Launch prep should stay unread")
++
++        let home = app.buttons["RootTabs.Sidebar.Destination.chat"]
++        XCTAssertTrue(home.waitForExistence(timeout: 5))
++        XCTAssertEqual(home.value as? String, "Unread")
++        home.press(forDuration: 0.8)
++        let markRead = app.buttons["Mark as Read"]
++        XCTAssertTrue(markRead.waitForExistence(timeout: 4), "Home should offer Mark as Read for its folded runs")
++        self.attachScreenshot(named: "sidebar-home-menu")
++        markRead.tap()
++        let cleared = NSPredicate { element, _ in ((element as? XCUIElement)?.value as? String ?? "").isEmpty }
++        let wait = XCTWaiter.wait(for: [XCTNSPredicateExpectation(predicate: cleared, object: home)], timeout: 8)
++        Thread.sleep(forTimeInterval: 1)
++        self.attachScreenshot(named: "sidebar-home-read")
++        XCTAssertEqual(wait, .completed, "Mark as Read should clear Home's unread runs")
++        XCTAssertFalse(home.label.contains("failed"), "The unread failure line should clear with the run")
 +    }
 +
      func testDrawerGroupHeaderControls() throws {
